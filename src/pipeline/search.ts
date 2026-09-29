@@ -163,9 +163,14 @@ export async function runSearch(
   // with the rest of that domain's chunks would present five windows onto one
   // document as five independent sources, which is exactly the failure the cap
   // exists to prevent.
+  //
+  // The cap is overridable because its right value depends entirely on the index. On
+  // a web index, 3 per domain is a sensible guard against one vendor filling the
+  // page. On a single-domain index — a documentation site, the most natural thing to
+  // index — it silently makes `max_results` unreachable.
   const { kept: diverse } = applyDomainDiversity(
     gated,
-    policy.maxPerDomain,
+    c.MAX_PER_DOMAIN > 0 ? c.MAX_PER_DOMAIN : policy.maxPerDomain,
     policy.minDistinctDomains,
   );
   const finalGated = diverse.filter((g) => g.route !== "exclude");

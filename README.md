@@ -215,6 +215,7 @@ npm run eval:rerank -- "your query"   # per-candidate gate signals
 npm run probe:answer                  # answer path, real models (needs keys)
 npm run probe:dense                   # hybrid retrieval, real embeddings
 npm run probe:corpus                  # real-corpus crawl and measurement
+npm run probe:gate                    # gate + abstention on the real corpus
 npm run index:seed     # seed the index
 ```
 
@@ -290,6 +291,61 @@ The recall ceiling is content, not pool depth. Widening the candidate pool from 
 while recall at the full pool edge only rises 22/24 to 23/24. The missing pages are
 not being truncated; neither channel ranks them. A deeper pool buys reranking more
 candidates to reject and nothing else.
+
+### What the gate and the abstention actually do
+
+`npm run probe:gate` runs the whole pipeline — understand, retrieve, rerank, gate,
+answer, verify — over the same 24 queries with the real engine and the real writer.
+On 87 pages from one domain, 960 decision requests, $0.05:
+
+```
+  candidates after fusion:  72.0 per query
+  kept by rerank:            7.5 per query
+  surviving the gate:        2.6 per query
+  results returned:          min 0  mean 2.6  max 3   (asked for 20)
+  gold in the response:      14/24
+  answered 12/24   withheld 12/24
+```
+
+`max 3` against `asked for 20` is the domain cap: every page of a documentation site
+is on the same domain, so `maxPerDomain: 3` made `max_results` unreachable. The cap
+is right for a web index, where one domain usually means one vendor shouting, and
+wrong for a single-domain corpus, so it is now `MAX_PER_DOMAIN` and overridable.
+
+Raising it does not fix the abstention, which was the more interesting hypothesis:
+at a cap of 8 the response grows from 2.7 to 5.8 results per query and the answered
+count does not move. Mean sufficiency sits at 0.61 against a `minSufficiency` of
+0.55 — the verdict is landing on the threshold, not above or below it, which is why
+the withheld rate hovers near half. Three repeat runs on an identical corpus answered
+6, 5 and 4 of 12, so the answer stage is far less stable between runs than the
+reranker is, which was reproducible to the case across three passes.
+
+Lowering `minSufficiency` would convert withheld into answered immediately, and the
+measurement does not support doing it: the distribution is narrow, so any threshold
+near the middle splits it arbitrarily, and 24 self-authored queries are not a basis
+for moving a number. It stays where it is, labelled as a product decision.
+
+The unanswerable half behaves better: 6 of 6 questions the corpus cannot answer were
+withheld, all on `no_candidates`.
+
+### A metric that measured the labelling, not the system
+
+Of the 12 questions that were answered, 4 did not have the gold page in their
+evidence, which reads as four confident wrong answers. Inspecting them says
+otherwise. "What runs first, a resolved promise or a timer callback" was answered
+from `understanding-setimmediate` and `discover-promises-in-nodejs`; "reading
+something off disk without blocking everything else" from
+`overview-of-blocking-vs-non-blocking`. Both are pages that genuinely answer those
+questions. The gold label named one page, and the system found a different correct
+one.
+
+This is the third time a measurement on this corpus turned out to be about the labels
+rather than the code — first gold pages that were not in the index, then a fusion
+between two id spaces that could not intersect, now a gold label that is a page
+rather than a fact. "The gold page is absent" is not a correctness metric, and any
+count built on it will be wrong in whichever direction the answer happens to come
+from. Whether those four answers are actually right is a judgement about prose, which
+this suite cannot make and should not pretend to.
 
 ## Probes
 

@@ -224,6 +224,20 @@ describe("domain diversity", () => {
     const { kept } = applyDomainDiversity(input, 1, 2);
     expect(kept).toHaveLength(2);
   });
+
+  it("lets a single-domain index exceed the web-index default", () => {
+    // Every page of a documentation site is on one domain, so the default cap of 3
+    // makes `max_results` unreachable above 3. Measured on 87 crawled pages: a
+    // request for 20 returned at most 3. The cap exists to stop one vendor filling
+    // the page, which is not what a single-domain corpus looks like.
+    const input = Array.from({ length: 9 }, (_, i) => candidate(String(i), "nodejs.org", 0.9 - i / 100));
+
+    const { kept } = applyDomainDiversity(input, 8, 1);
+    expect(kept).toHaveLength(8);
+
+    // Uncapped, the same input yields the whole set.
+    expect(applyDomainDiversity(input, 20, 1).kept).toHaveLength(9);
+  });
 });
 
 describe("evidence score", () => {

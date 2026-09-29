@@ -19,7 +19,8 @@
     "eval:rerank": "tsx scripts/debug-gate.ts",
     "probe:answer": "tsx scripts/answer-probe.ts",
     "probe:dense": "tsx scripts/dense-probe.ts",
-    "probe:corpus": "tsx scripts/corpus-probe.ts"
+    "probe:corpus": "tsx scripts/corpus-probe.ts",
+    "probe:gate": "tsx scripts/gate-probe.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

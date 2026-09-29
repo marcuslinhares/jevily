@@ -84,6 +84,14 @@ export interface Config {
   DEFAULT_MAX_RESULTS: number;
   DEFAULT_CANDIDATE_POOL: number;
   DEFAULT_CANDIDATES_RERANKED: number;
+  /** Overrides the policy's per-domain cap. 0 means "use the policy default".
+   *
+   *  The default of 3 is right for a web index, where one domain usually means one
+   *  vendor shouting. It is wrong for a single-domain corpus, and a documentation
+   *  site is the most natural thing to index: every page is nodejs.org, so the cap
+   *  makes `max_results` unreachable above 3 no matter what the caller asks for.
+   *  Measured on 87 crawled pages, a request for 20 returned at most 3. */
+  MAX_PER_DOMAIN: number;
   ABSTAIN_ENABLED: boolean;
   VERIFY_CITATIONS: boolean;
 }
@@ -184,6 +192,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       DEFAULT_MAX_RESULTS: num(env, "DEFAULT_MAX_RESULTS", 10, 1, 20),
       DEFAULT_CANDIDATE_POOL: num(env, "DEFAULT_CANDIDATE_POOL", 60, 10, 200),
       DEFAULT_CANDIDATES_RERANKED: num(env, "DEFAULT_CANDIDATES_RERANKED", 24, 4, 200),
+      MAX_PER_DOMAIN: num(env, "MAX_PER_DOMAIN", 0, 0, 50),
       ABSTAIN_ENABLED: bool(env, "ABSTAIN_ENABLED", true),
       VERIFY_CITATIONS: bool(env, "VERIFY_CITATIONS", true),
     };
