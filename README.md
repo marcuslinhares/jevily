@@ -230,9 +230,21 @@ anything. Results are reported twice: overall, and restricted to the queries the
 reranker can actually act on, since a passage that never reached the pool is a
 retrieval failure no re-ranker can repair.
 
-With a calibrated engine on an 11-query set: recall@1 goes 55% -> 82% overall, and
-0% -> 100% on the four queries BM25 ranked wrong. One query regresses, and the eval
-names the document responsible rather than assuming one.
+```bash
+EVAL_REPEAT=5 npm run eval
+```
+
+`EVAL_REPEAT` matters. The decision model is not deterministic between runs, so a
+single pass is a coin flip dressed as a measurement, and the eval says so when you
+ask for one. Over five independent passes on an 11-query set:
+
+| recall@1 | bm25 | decisions |
+| --- | --- | --- |
+| all queries | 55% (deterministic) | 73%–82% |
+| the 4 queries bm25 ranks wrong | 0% (deterministic) | 75%–100% |
+
+Four of the five passes fix all four; one fixes three. One query regresses in every
+pass, and the eval names the document responsible rather than assuming one.
 
 ## Limits
 

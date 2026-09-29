@@ -248,22 +248,22 @@ function toCandidate(id: string): Candidate {
   };
 }
 
-async function main(): Promise<void> {
+/**
+ * One pass over the set. Kept separate from reporting so the whole thing can be
+ * repeated: a single pass over eleven queries is not a measurement, because the
+ * decision model is not deterministic between runs and the ranking inherits that.
+ */
+async function onePass(reuseCache: boolean): Promise<Pass> {
   const engine = createEngine();
-  const service: DecisionService = createDecisionService(engine);
+  // Repeats have to be independent samples. The decision cache is process-wide, so
+  // a cached repeat would re-read the same answers and report zero variance — which
+  // is how "100% over 5 passes" can be a single pass wearing a hat.
+  const service: DecisionService = reuseCache ? createDecisionService(engine) : new DecisionService(engine, null);
   const policy = resolvePolicy(service.calibrated);
 
   const index = new Bm25Index();
   for (const doc of CORPUS) index.add(doc.id, `${doc.title}\n${doc.text}`);
 
-  type Row = {
-    case: Case;
-    bm25: number | null;
-    after: number | null;
-    pooled: boolean;
-    /** Whichever document ended up ahead of the gold, when the reranker lost rank. */
-    winner: string | null;
-  };
   const rows: Row[] = [];
 
   for (const testCase of CASES) {
@@ -293,23 +293,88 @@ async function main(): Promise<void> {
     rows.push({ case: testCase, bm25, after, pooled, winner });
   }
 
-  // --- report ---------------------------------------------------------------
-  const pooled = rows.filter((r) => r.pooled);
-  // The subset the reranker can actually act on: gold retrieved, but not already first.
-  const rerankable = pooled.filter((r) => r.bm25 !== 1);
-  const pct = (v: number, n: number) => (n === 0 ? "  n/a" : `${((v / n) * 100).toFixed(0)}%`);
+  const pooledRows = rows.filter((r) => r.pooled);
+  return {
+    rows,
+    pooledCount: pooledRows.length,
+    rerankableCount: pooledRows.filter((r) => r.bm25 !== 1).length,
+    overall: hitRates(rows),
+    rerankable: hitRates(pooledRows.filter((r) => r.bm25 !== 1)),
+    movedUp: rows.filter((r) => r.bm25 !== null && r.after !== null && r.after < r.bm25).length,
+    movedDown: rows.filter((r) => r.bm25 !== null && r.after !== null && r.after > r.bm25).length,
+    dropped: pooledRows.filter((r) => r.after === null).length,
+    engine: `${engine.name} (${engine.calibrated ? "calibrated" : "uncalibrated"})`,
+    usage: service.usage,
+  };
+}
 
-  process.stdout.write(`\nengine: ${engine.name} (calibrated: ${engine.calibrated})\n`);
-  if (!service.calibrated) {
+function hitRates(rows: Row[]): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (const t of THRESHOLDS) out[t] = rows.filter((r) => r.after !== null && r.after <= t).length;
+  return out;
+}
+
+async function main(): Promise<void> {
+  const repeat = Math.max(1, Number(process.env.EVAL_REPEAT ?? 1));
+  const passes: Pass[] = [];
+  for (let i = 0; i < repeat; i++) {
+    const pass = await onePass(false);
+    passes.push(pass);
+    if (repeat > 1) {
+      process.stdout.write(
+        `  pass ${i + 1}/${repeat}: ${pass.rerankable[1] ?? 0}/${pass.rerankableCount} at rank 1, ` +
+          `${pass.movedUp} up / ${pass.movedDown} down\n`,
+      );
+    }
+  }
+  report(passes);
+}
+
+interface Row {
+  case: Case;
+  bm25: number | null;
+  after: number | null;
+  pooled: boolean;
+  /** Whichever document ended up ahead of the gold, when the reranker lost rank. */
+  winner: string | null;
+}
+
+interface Pass {
+  rows: Row[];
+  pooledCount: number;
+  rerankableCount: number;
+  overall: Record<number, number>;
+  rerankable: Record<number, number>;
+  movedUp: number;
+  movedDown: number;
+  dropped: number;
+  engine: string;
+  usage: DecisionService["usage"];
+}
+
+function report(passes: Pass[]): void {
+  const first = passes[0]!;
+  const rows = first.rows;
+  const pooled = rows.filter((r) => r.pooled);
+  const rerankableRows = pooled.filter((r) => r.bm25 !== 1);
+  const pct = (v: number, n: number) => (n === 0 ? "n/a" : `${((v / n) * 100).toFixed(0)}%`);
+
+  process.stdout.write(`\nengine: ${first.engine}\n`);
+  if (first.engine.endsWith("(uncalibrated)")) {
     process.stdout.write(
-      "\n  note: the mock engine is a lexical stand-in, not a judgement model.\n" +
-        "  It is expected to score below BM25. These numbers check the plumbing;\n" +
-        "  they say nothing about reranking quality.\n",
+      "  note: the mock engine is a lexical stand-in, not a judgement model. It is\n" +
+        "  expected to score below BM25. These numbers check the plumbing; they say\n" +
+        "  nothing about reranking quality.\n",
     );
   }
 
   for (const row of rows) {
-    const mark = row.bm25 === row.after ? "  " : row.after !== null && row.bm25 !== null && row.after < row.bm25 ? "->" : "!!";
+    const mark =
+      row.bm25 === row.after
+        ? "  "
+        : row.after !== null && row.bm25 !== null && row.after < row.bm25
+          ? "->"
+          : "!!";
     const status = !row.pooled ? "not in pool" : row.after === null ? "reranked out" : "";
     process.stdout.write(
       `  ${mark} ${pad(row.case.query, 52)} bm25=${pad(String(row.bm25 ?? "-"), 4)}` +
@@ -320,36 +385,53 @@ async function main(): Promise<void> {
     }
   }
 
-  process.stdout.write("\n  overall recall@N (all queries)\n");
-  process.stdout.write(`    ${pad("N", 5)}${pad("bm25", 12)}decisions\n`);
-  for (const t of THRESHOLDS) {
-    const before = rows.filter((r) => r.bm25 !== null && r.bm25 <= t).length;
-    const after = rows.filter((r) => r.after !== null && r.after <= t).length;
-    process.stdout.write(`    ${pad(`@${t}`, 5)}${pad(pct(before, rows.length), 12)}${pct(after, rows.length)}\n`);
-  }
+  // Aggregate across passes. Reporting one pass over eleven queries is how you end
+  // up "measuring" a 100% that is really a 4-out-of-5 coin flip: the decision model
+  // is not deterministic between runs and the ranking inherits that.
+  const minMax = (pick: (p: Pass) => number) => {
+    const values = passes.map(pick);
+    return { min: Math.min(...values), max: Math.max(...values) };
+  };
+  const bm25At1 = rows.filter((r) => r.bm25 === 1).length;
+  const overallAt1 = minMax((p) => p.overall[1] ?? 0);
+  const rerankAt1 = minMax((p) => p.rerankable[1] ?? 0);
 
+  process.stdout.write("\n  recall@1, all queries\n");
+  process.stdout.write(`    bm25      ${pct(bm25At1, rows.length)}  (deterministic)\n`);
   process.stdout.write(
-    `\n  recall@N over the ${rerankable.length} queries the reranker can act on\n` +
-      `  (gold retrieved but not already ranked first by bm25)\n`,
+    `    decisions  ${passes.length > 1 ? `${pct(overallAt1.min, rows.length)}-${pct(overallAt1.max, rows.length)} over ${passes.length} passes` : pct(overallAt1.min, rows.length)}\n`,
   );
-  process.stdout.write(`    ${pad("N", 5)}${pad("bm25", 12)}decisions\n`);
-  for (const t of THRESHOLDS) {
-    const before = rerankable.filter((r) => r.bm25 !== null && r.bm25 <= t).length;
-    const after = rerankable.filter((r) => r.after !== null && r.after <= t).length;
-    process.stdout.write(`    ${pad(`@${t}`, 5)}${pad(pct(before, rerankable.length), 12)}${pct(after, rerankable.length)}\n`);
+
+  process.stdout.write(
+    `\n  recall@1 over the ${rerankableRows.length} queries the reranker can act on\n` +
+      "  (gold retrieved, but not already ranked first by bm25)\n",
+  );
+  process.stdout.write(`    bm25      0%  (deterministic)\n`);
+  process.stdout.write(
+    `    decisions  ${passes.length > 1 ? `${pct(rerankAt1.min, rerankableRows.length)}-${pct(rerankAt1.max, rerankableRows.length)}` : pct(rerankAt1.min, rerankableRows.length)}\n`,
+  );
+
+  if (passes.length === 1) {
+    process.stdout.write(
+      "\n  warning: one pass over this set is not a measurement. The decision model is\n" +
+        "  not deterministic between runs — re-run with EVAL_REPEAT=5 before\n" +
+        "  believing a difference.\n",
+    );
   }
 
-  const lost = rows.filter((r) => r.bm25 !== null && r.after !== null && r.after > r.bm25).length;
-  const won = rows.filter((r) => r.bm25 !== null && r.after !== null && r.after < r.bm25).length;
+  const up = minMax((p) => p.movedUp);
   process.stdout.write(
-    `\n  moved up: ${won}   moved down: ${lost}   dropped out: ${pooled.filter((r) => r.after === null).length}\n`,
+    `\n  moved up: ${first.movedUp}-${up.max}   moved down: ${first.movedDown}   dropped out: ${first.dropped}\n`,
   );
   process.stdout.write(
     `  ceiling: gold in pool for ${pooled.length}/${rows.length} queries — the rest is retrieval, not ranking\n`,
   );
+  const requests = passes.reduce((a, x) => a + x.usage.requests, 0);
+  const tokens = passes.reduce((a, x) => a + x.usage.inputTokens, 0);
+  const cost = passes.reduce((a, x) => a + (x.usage.costUsd ?? 0), 0);
   process.stdout.write(
-    `  usage: ${service.usage.requests} requests, ${service.usage.inputTokens.toLocaleString()} input tokens` +
-      `${service.usage.costUsd !== null ? `, $${service.usage.costUsd.toFixed(5)}` : ""}\n\n`,
+    `  usage: ${requests} requests, ${tokens.toLocaleString()} input tokens` +
+      `${cost > 0 ? `, $${cost.toFixed(5)}` : ""}\n\n`,
   );
 }
 
