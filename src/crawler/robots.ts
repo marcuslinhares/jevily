@@ -111,7 +111,7 @@ export class RobotsCache {
   }
 }
 
-function safeUrl(value: string): URL | null {
+export function safeUrl(value: string): URL | null {
   try {
     const url = new URL(value);
     return url.protocol === "http:" || url.protocol === "https:" ? url : null;

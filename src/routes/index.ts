@@ -130,18 +130,15 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
       const outcome = await crawler.crawlOne(url, force ? { force: true } : {});
       return outcome;
     }
-    const outcomes: unknown[] = [];
     const result = await crawler.crawlSite(url, {
       maxDepth: max_depth ?? 2,
-      onProgress: (o) => {
-        outcomes.push(o);
-        if (max_pages && outcomes.length >= max_pages) log.debug("crawl page budget reached", { url });
-      },
+      maxPages: max_pages,
     });
     return {
       discovered: result.discovered,
       indexed: result.outcomes.filter((o) => o.status === "indexed").length,
-      outcomes: max_pages ? result.outcomes.slice(0, max_pages) : result.outcomes,
+      pending: deps.store.pendingCount(),
+      outcomes: result.outcomes,
     };
   });
 

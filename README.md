@@ -208,12 +208,13 @@ degrading every judgement in the pipeline.
 ```bash
 npm run dev            # watch mode
 npm run build && npm start
-npm test               # 187 tests, no network, no keys
+npm test               # 195 tests, no network, no keys
 npm run typecheck
 npm run eval           # reranking recall, BM25 vs decisions
 npm run eval:rerank -- "your query"   # per-candidate gate signals
 npm run probe:answer                  # answer path, real models (needs keys)
 npm run probe:dense                   # hybrid retrieval, real embeddings
+npm run probe:corpus                  # real-corpus crawl and measurement
 npm run index:seed     # seed the index
 ```
 
@@ -249,27 +250,72 @@ ask for one. Over five independent passes on an 11-query set:
 Four of the five passes fix all four; one fixes three. One query regresses in every
 pass, and the eval names the document responsible rather than assuming one.
 
+### The real corpus
+
+The synthetic set above is a controlled comparison: known corpus, known gold, one
+variable. It cannot say whether anything holds on a corpus nobody designed. So there
+is a second reading, against the real Node.js Learn documentation — 87 pages, 729
+chunks, crawled with the crawler and measured with the pipeline's own `retrieve`:
+
+```bash
+npm run probe:corpus crawl 200            # ~50s, honours robots.txt
+EVAL_CORPUS=/tmp/opencode/jevily-corpus \
+  DECISION_API_KEY=... EMBEDDING_PROVIDER=openrouter npm run eval
+```
+
+Retrieval, 24 human-written queries whose gold pages are all present in the crawl:
+
+| recall | lexical | hybrid |
+| --- | --- | --- |
+| @1 | 25% | 33% |
+| @3 | 46% | 63% |
+| @5 | 50% | 75% |
+
+Reranking, gold already inside the top 5 (18 of 24 cases):
+
+| | |
+| --- | --- |
+| promoted to rank 1 | 4 of 10 rerankable |
+| lost a rank 1 it already had | 0 of 8 |
+| rank 1 overall | 12 of 18 |
+
+Three independent runs gave the same 4/10 and 0/8, each 90 decision requests at
+$0.0049. Jev is not deterministic between runs, so that stability is a reading worth
+having — but the thresholds in `policy.ts` were fitted to the synthetic set, not this
+one, so these numbers are evidence, not a score. The eval prints which case moved and
+which document won, because a regression should be read before it is tuned away.
+
 ## Probes
 
-Three things are only verified against real services, because stubbing them would
-test the wiring and not the product:
+Four things are only verified against real services, because stubbing them would test
+the wiring and not the product:
 
 ```bash
 OPENROUTER_API_KEY=... npm run eval              # reranking, with the real model
 OPENROUTER_API_KEY=... GENERATOR_PROVIDER=openrouter npm run probe:answer
 OPENROUTER_API_KEY=... EMBEDDING_PROVIDER=openrouter npm run probe:dense
+npm run probe:corpus crawl 200                   # real corpus, no key needed
 ```
 
 The dense probe is the one that validates the hybrid channel: on a corpus where the
 queries deliberately share no vocabulary with the passages that answer them, lexical
 retrieval alone finds 2 of 4 and the hybrid finds 4 of 4, recovering two passages
-that BM25 never saw. A probe bug initially reported the opposite, by comparing a
-document id against chunk ids.
+that BM25 never saw.
+
+The corpus probe is the one that would catch a measurement that is not measuring
+anything. Its first run reported `recall@20 = 1/10` on a corpus of 177 real pages,
+which read as a catastrophic retrieval failure; nine of the ten gold pages were simply
+not in the index, because the seed was a locale alias the sitemap does not list. It now
+verifies every gold against the crawl and refuses to report recall otherwise. An
+earlier version also built its own `Bm25Index` keyed by document url and fused it with
+a dense list keyed by chunk id — two id spaces that never intersect, so no candidate
+could be promoted across channels and the hybrid reproduced the lexical numbers exactly
+at every k. Identical numbers were the tell.
 
 ## Limits
 
-- Dense retrieval is a brute-force cosine scan. Correct to roughly 200k chunks,
-  after which it wants an ANN index.
+- Dense retrieval is a brute-force cosine scan. Measured at 729 chunks: 0.1–2ms per
+  query. Correct to roughly 200k chunks, after which it wants an ANN index.
 - `node:sqlite` is still flagged experimental in Node 22–23.
 - The injection check is a filter, not a security boundary. The writer's prompt
   treats every passage as untrusted text regardless of what the check said.
@@ -283,7 +329,14 @@ document id against chunk ids.
   in particular — the sufficiency level above which the count-based floors stop
   applying — has no labelled data behind it yet.
 - Thresholds in `policy.ts` are starting points. They want tuning against a labelled
-  set for your domain.
+  set for your domain. The real-corpus run above is a first look at how they behave
+  off-distribution, not a fit.
+- A site crawl is scoped to the seed's path prefix. Sitemaps are published per host,
+  so without a scope, seeding `https://nodejs.org/en/learn` — a locale alias the
+  sitemap does not list — indexes the entire host: 1651 URLs, of which 88 are the
+  section asked for. The crawler honours robots.txt and a per-host delay, and
+  `max_pages` stops the drain rather than truncating the response, leaving the rest
+  of the frontier pending.
 - Retrieval quality is bounded by the index. If the corpus is small, so is recall,
   and no amount of reranking recovers a passage the retriever never surfaced —
   `npm run eval` reports that ceiling separately for exactly this reason.

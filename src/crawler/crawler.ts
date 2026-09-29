@@ -11,7 +11,7 @@ import { mapPool, sleep } from "../util/async.js";
 import { sha256 } from "../util/hash.js";
 import { detectLanguage } from "../util/text.js";
 import { extract, normalizeDate } from "./extract.js";
-import { RobotsCache } from "./robots.js";
+import { RobotsCache, safeUrl } from "./robots.js";
 import { IndexManager, chunkDocument } from "../store/indexer.js";
 import { isHttpUrl, type Store } from "../store/db.js";
 
@@ -36,8 +36,43 @@ export interface CrawlOutcome {
 export interface CrawlerOptions {
   followInternalLinks?: boolean;
   maxDepth?: number;
+  /** Stop after this many pages have been attempted. Not a response limit: the
+   *  frontier is left intact so a later drain resumes where this one stopped. */
+  maxPages?: number;
+  /** Confines the crawl to a path prefix. See {@link scopeOf}. */
+  scope?: string | null;
   signal?: AbortSignal;
   onProgress?: (outcome: CrawlOutcome) => void;
+}
+
+/**
+ * The path prefix a seed confines its crawl to, or null for the whole host.
+ *
+ * Sitemaps are published per host, so seeding `https://nodejs.org/en/learn` and
+ * filtering only by hostname yields every post on the site — nodejs.org publishes
+ * 1651 URLs, of which 88 are the section that was asked for. Beyond being wasteful,
+ * it makes the first N pages crawled whatever the sitemap happened to list first,
+ * so a bounded crawl silently indexes the wrong subject. A root seed, or a seed that
+ * names a file, keeps whole-host behaviour: there is no section to confine to.
+ */
+export function scopeOf(seed: URL): string | null {
+  const path = seed.pathname;
+  if (path === "" || path === "/") return null;
+  if (/\.[a-z0-9]{1,8}$/i.test(path)) return null;
+  return `${path.replace(/\/+$/, "")}/`;
+}
+
+/** True when `url` belongs to the crawl: same host, and under the scope if there is one. */
+function inScope(url: string, origin: URL, scope: string | null): boolean {
+  if (!isHttpUrl(url)) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.hostname !== origin.hostname) return false;
+  return scope === null || parsed.pathname.startsWith(scope);
 }
 
 export class Crawler {
@@ -149,8 +184,8 @@ export class Crawler {
     seed: string,
     options: CrawlerOptions = {},
   ): Promise<{ discovered: number; outcomes: CrawlOutcome[] }> {
-    const c = config();
     const start = new URL(seed);
+    const scope = options.scope === undefined ? scopeOf(start) : options.scope;
     const discovered: string[] = [];
 
     for (const sitemap of await this.robots.sitemapsFor(seed)) {
@@ -158,13 +193,12 @@ export class Crawler {
     }
     const discoveredCount = this.store.enqueue(
       discovered
-        .filter(isHttpUrl)
-        .filter((u) => new URL(u).hostname === start.hostname)
+        .filter((u) => inScope(u, start, scope))
         .map((u) => ({ url: u, depth: 1, priority: 0.5 })),
     );
 
     this.store.enqueue([{ url: start.toString(), depth: 0, priority: 1 }]);
-    const outcomes = await this.drain({ ...options, maxDepth: options.maxDepth ?? 3 });
+    const outcomes = await this.drain({ ...options, scope, maxDepth: options.maxDepth ?? 3 });
     return { discovered: discoveredCount, outcomes };
   }
 
@@ -172,8 +206,16 @@ export class Crawler {
   async drain(options: CrawlerOptions = {}): Promise<CrawlOutcome[]> {
     const c = config();
     const outcomes: CrawlOutcome[] = [];
+    // A site crawl of a sitemap with thousands of URLs must be stoppable, so the
+    // budget is enforced on the claim, not reported afterwards. Claiming a batch
+    // larger than the remaining budget would strand the surplus as 'active', so the
+    // batch is capped instead.
+    const budget = options.maxPages && options.maxPages > 0 ? options.maxPages : null;
     for (;;) {
-      const batch = this.store.claimQueue(c.CRAWL_CONCURRENCY);
+      if (options.signal?.aborted) break;
+      const remaining = budget === null ? c.CRAWL_CONCURRENCY : budget - outcomes.length;
+      if (remaining <= 0) break;
+      const batch = this.store.claimQueue(Math.min(c.CRAWL_CONCURRENCY, remaining));
       if (batch.length === 0) break;
       const results = await mapPool(batch, c.CRAWL_CONCURRENCY, async (item) => {
         const outcome = await this.crawlOne(item.url);
@@ -183,14 +225,22 @@ export class Crawler {
       });
       outcomes.push(...results);
 
+      if (budget !== null && outcomes.length >= budget) break;
+
       if (options.followInternalLinks !== false) {
         const fresh = results.filter((o) => o.status === "indexed");
         if (fresh.length > 0) {
           const links = fresh.flatMap((o) => this.internalLinks(o.url)).slice(0, c.CRAWL_CONCURRENCY * 20);
           const known = new Set(this.store.allDocs().map((d) => d.url));
+          // Links go through the same scope as the sitemap, or link following undoes
+          // the scoping a moment after the sitemap applied it. A standalone drain has
+          // no scope and keeps whole-host behaviour.
+          const scope = options.scope ?? null;
+          const origin = safeUrl(fresh[0]!.url);
           const queued = this.store.enqueue(
             links
               .filter((u) => !known.has(u))
+              .filter((u) => origin === null || inScope(u, origin, scope))
               .map((u) => ({ url: u, depth: 1, priority: 0.3 })),
           );
           log.debug("frontier grown", { queued });

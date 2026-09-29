@@ -382,6 +382,18 @@ export class Store {
     return row.n;
   }
 
+  /**
+   * Items claimed but never completed. Should be zero outside an in-flight crawl: a
+   * truncated response or a batch claimed past a budget would strand these as
+   * 'active' with nobody left to resolve them.
+   */
+  activeCount(): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM queue WHERE status = 'active'`)
+      .get() as unknown as { n: number };
+    return row.n;
+  }
+
   // --- response cache ------------------------------------------------------
 
   cacheGet<T>(key: string): T | null {

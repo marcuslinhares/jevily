@@ -26,7 +26,13 @@ import { Bm25Index } from "../src/retrieval/bm25.js";
 import { rerank } from "../src/pipeline/rerank.js";
 import { resolvePolicy } from "../src/pipeline/policy.js";
 import type { Candidate } from "../src/pipeline/retrieve.js";
-import type { Store } from "../src/store/db.js";
+import { Store } from "../src/store/db.js";
+import { IndexManager } from "../src/store/indexer.js";
+import { retrieve } from "../src/pipeline/retrieve.js";
+import { createEmbedder } from "../src/retrieval/vectors.js";
+import { CORPUS_GOLD } from "./helpers/corpus-gold.js";
+import type { QueryPlan } from "../src/decision/questions.js";
+import type { SearchRequest } from "../src/domain/types.js";
 
 interface Doc {
   id: string;
@@ -204,6 +210,7 @@ const HORIZON: Record<0 | 1 | 2 | 3, number> = { 0: 0, 1: 1, 2: 2, 3: 3 };
 
 const THRESHOLDS = [1, 3, 5];
 const TOP_K = 5;
+const RERANK_K = 5;
 
 function rankOf(ranked: string[], gold: string): number | null {
   const i = ranked.indexOf(gold);
@@ -315,6 +322,10 @@ function hitRates(rows: Row[]): Record<number, number> {
 }
 
 async function main(): Promise<void> {
+  if (process.env.EVAL_CORPUS) {
+    await realCorpusPass();
+    return;
+  }
   const repeat = Math.max(1, Number(process.env.EVAL_REPEAT ?? 1));
   const passes: Pass[] = [];
   for (let i = 0; i < repeat; i++) {
@@ -328,6 +339,177 @@ async function main(): Promise<void> {
     }
   }
   report(passes);
+}
+
+/**
+ * The synthetic eval above is a controlled comparison: known corpus, known gold, one
+ * variable. It says the reranker is wired correctly and is better than BM25 on the
+ * cases it was written for. It cannot say whether the thresholds in policy.ts hold on
+ * a corpus nobody designed, which is what this pass is for — the same rerank, run
+ * through the real retrieve path against the crawled Node documentation.
+ */
+async function realCorpusPass(): Promise<void> {
+  const dir = process.env.EVAL_CORPUS!;
+  const store = new Store(dir);
+  const index = new IndexManager(store);
+  await index.rebuild();
+
+  const cases = realCorpusCases(store);
+  if (cases.length === 0) {
+    process.stderr.write("no gold cases resolve against this corpus\n");
+    store.close();
+    process.exit(1);
+  }
+
+  const engine = createEngine();
+  const service = new DecisionService(engine, null);
+  const policy = resolvePolicy(service.calibrated);
+  const embedder = createEmbedder();
+
+  const plan: QueryPlan = {
+    intent: "factual_lookup",
+    topic: "general",
+    answerShape: "short_paragraph",
+    synthesisNeed: 0.3,
+    timeHorizon: 0,
+    complexity: 1,
+    ambiguity: 0.2,
+    requiresExactPhrase: false,
+    expandQuery: false,
+    expansionStrategy: "none",
+    multiRound: false,
+  };
+
+  const found = { lexical: [0, 0, 0], hybrid: [0, 0, 0] };
+  const flipped: string[] = [];
+  const hurt: string[] = [];
+
+  // Reranking is the part that uses the decision engine, and therefore the part whose
+  // thresholds this corpus is meant to stress. Retrieval alone would report zero
+  // decisions and prove nothing about policy.ts.
+  let rerankTop1 = 0;
+  let rerankable = 0;
+  let wasFirstCount = 0;
+  let rerankLostTop1 = 0;
+  const rerankFlips: string[] = [];
+  const rerankHurt: string[] = [];
+
+  for (const testCase of cases) {
+    const { candidates } = await retrieve(index, store, testCase.request, plan, [testCase.query], embedder);
+
+    // Lexical-only shortlist, the same pool the hybrid drew from.
+    const lexicalPool = candidates
+      .filter((c) => c.lexical !== null)
+      .sort((a, b) => (b.lexical ?? 0) - (a.lexical ?? 0));
+
+    const at = (list: typeof candidates, k: number) =>
+      list.slice(0, k).some((c) => c.chunk.url.includes(testCase.goldFragment));
+
+    for (const [i, t] of THRESHOLDS.entries()) {
+      if (at(lexicalPool, t)) found.lexical[i]!++;
+      if (at(candidates, t)) found.hybrid[i]!++;
+    }
+
+    if (at(lexicalPool, 3) && !at(candidates, 3)) flipped.push(testCase.query);
+    if (!at(lexicalPool, 3) && at(candidates, 3)) hurt.push(testCase.query);
+
+    // Rerank the retrieved shortlist, the way the pipeline does. A re-ranker cannot
+    // rescue a passage that never reached the pool, so only pooled cases count.
+    const shortlist = candidates.slice(0, RERANK_K);
+    const hasGold = shortlist.some((c) => c.chunk.url.includes(testCase.goldFragment));
+    if (!hasGold) continue;
+
+    const wasFirst = shortlist[0]!.chunk.url.includes(testCase.goldFragment);
+    if (wasFirst) wasFirstCount++;
+    else rerankable++;
+
+    const reranked = await rerank(service, policy, {
+      query: testCase.query,
+      candidates: shortlist,
+      constraintRequired: false,
+      exactPhraseHit: (cand) => cand.chunk.text.toLowerCase().includes(testCase.query.toLowerCase()),
+      timeHorizon: 0,
+    });
+    const kept = reranked.filter((r) => r.keep);
+    const nowFirst = kept[0]?.chunk.url.includes(testCase.goldFragment) ?? false;
+    if (nowFirst) rerankTop1++;
+    if (wasFirst && !nowFirst) {
+      rerankLostTop1++;
+      rerankHurt.push(
+        `${testCase.query}  <-  ${kept[0]?.chunk.url.replace("https://nodejs.org/learn/", "") ?? "(dropped)"}`,
+      );
+    } else if (!wasFirst && nowFirst) {
+      rerankFlips.push(testCase.query);
+    }
+  }
+
+  const pct = (v: number) => ((v / cases.length) * 100).toFixed(0);
+  process.stdout.write(
+    `\nengine: ${engine.name} (${engine.calibrated ? "calibrated" : "uncalibrated"})\n` +
+      `corpus: ${store.allDocs().length} documents, ${cases.length} labelled queries\n` +
+      `\n  recall@  lexical  hybrid\n`,
+  );
+  for (const [i, t] of THRESHOLDS.entries()) {
+    process.stdout.write(
+      `  @${String(t).padEnd(4)}  ${pad(`${found.lexical[i]} (${pct(found.lexical[i]!)}%)`, 16)}${found.hybrid[i]} (${pct(found.hybrid[i]!)})\n`,
+    );
+  }
+
+  process.stdout.write(`\n  hybrid reached top-3 where lexical could not: ${flipped.length}\n`);
+  for (const f of flipped.slice(0, 5)) process.stdout.write(`    + ${f}\n`);
+  process.stdout.write(`  hybrid lost top-3 that lexical had:               ${hurt.length}\n`);
+  for (const h of hurt.slice(0, 5)) process.stdout.write(`    - ${h}\n`);
+
+  // The reranking reading, which is the one the decision engine actually produced.
+  const pooledCount = rerankable + wasFirstCount;
+  if (pooledCount > 0) {
+    process.stdout.write(
+      `\n  rerank, gold already in the top ${RERANK_K} (${pooledCount} of ${cases.length}):\n` +
+        `    moved to rank 1: ${rerankFlips.length}/${rerankable} rerankable\n` +
+        `    lost rank 1:     ${rerankLostTop1}/${wasFirstCount} already-first\n` +
+        `    rank 1 overall:  ${rerankTop1}/${pooledCount}\n`,
+    );
+    for (const f of rerankFlips.slice(0, 4)) process.stdout.write(`    + ${f}\n`);
+    for (const h of rerankHurt.slice(0, 6)) process.stdout.write(`    - ${h}\n`);
+  }
+
+  const u = service.usage;
+  process.stdout.write(
+    `\n  decisions: ${u.requests} requests, $${u.costUsd?.toFixed(5) ?? "?"}\n` +
+      `  one pass, real corpus. The thresholds in policy.ts were fitted to a synthetic\n` +
+      `  set, not this one, so a regression here is evidence rather than a verdict —\n` +
+      `  read which case moved and why before changing a number.\n\n`,
+  );
+
+  store.close();
+}
+
+interface RealCase {
+  query: string;
+  goldFragment: string;
+  request: SearchRequest;
+}
+
+function realCorpusCases(store: Store): RealCase[] {
+  const urls = store.allDocs().map((d) => d.url);
+  return CORPUS_GOLD.filter((c) => urls.some((u) => u.includes(c.goldFragment))).map((c) => ({
+    ...c,
+    request: {
+      query: c.query,
+      search_depth: "advanced",
+      max_results: 20,
+      topic: "general",
+      time_range: null,
+      include_answer: false,
+      include_raw_content: false,
+      include_published_date: false,
+      filter_by_published_date: false,
+      filter_by_language: false,
+      exact_match: false,
+      auto_parameters: false,
+      safe_search: false,
+    },
+  }));
 }
 
 interface Row {
