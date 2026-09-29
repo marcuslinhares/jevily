@@ -285,6 +285,12 @@ having — but the thresholds in `policy.ts` were fitted to the synthetic set, n
 one, so these numbers are evidence, not a score. The eval prints which case moved and
 which document won, because a regression should be read before it is tuned away.
 
+The recall ceiling is content, not pool depth. Widening the candidate pool from 72 to
+150 and 240 does not improve it — @5 drops from 18/24 to 17/24 and @20 holds at 20/24,
+while recall at the full pool edge only rises 22/24 to 23/24. The missing pages are
+not being truncated; neither channel ranks them. A deeper pool buys reranking more
+candidates to reject and nothing else.
+
 ## Probes
 
 Four things are only verified against real services, because stubbing them would test
