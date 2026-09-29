@@ -28,6 +28,7 @@ Generation proposes; typed judgement disposes.
 | Citations | strings in the prose | every claim verified against its source, unverified claims dropped |
 | Weak evidence | still produces a confident answer | `abstained: true` with the reason, and no answer |
 | Result pages | padded to `max_results` | capped per domain; a thin page returns thin rather than five windows onto one document |
+| Hybrid retrieval | one channel | BM25 plus a dense channel that scans the whole corpus, fused with RRF |
 | Debugging | a request id | a full trace: every question, every answer, every threshold |
 
 The abstention behaviour is the one that matters most. Any search API that always
@@ -212,6 +213,7 @@ npm run typecheck
 npm run eval           # reranking recall, BM25 vs decisions
 npm run eval:rerank -- "your query"   # per-candidate gate signals
 npm run probe:answer                  # answer path, real models (needs keys)
+npm run probe:dense                   # hybrid retrieval, real embeddings
 npm run index:seed     # seed the index
 ```
 
@@ -246,6 +248,23 @@ ask for one. Over five independent passes on an 11-query set:
 
 Four of the five passes fix all four; one fixes three. One query regresses in every
 pass, and the eval names the document responsible rather than assuming one.
+
+## Probes
+
+Three things are only verified against real services, because stubbing them would
+test the wiring and not the product:
+
+```bash
+OPENROUTER_API_KEY=... npm run eval              # reranking, with the real model
+OPENROUTER_API_KEY=... GENERATOR_PROVIDER=openrouter npm run probe:answer
+OPENROUTER_API_KEY=... EMBEDDING_PROVIDER=openrouter npm run probe:dense
+```
+
+The dense probe is the one that validates the hybrid channel: on a corpus where the
+queries deliberately share no vocabulary with the passages that answer them, lexical
+retrieval alone finds 2 of 4 and the hybrid finds 4 of 4, recovering two passages
+that BM25 never saw. A probe bug initially reported the opposite, by comparing a
+document id against chunk ids.
 
 ## Limits
 
