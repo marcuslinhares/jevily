@@ -35,6 +35,9 @@ export interface Config {
   DATA_DIR: string;
   BODY_LIMIT_BYTES: number;
   API_KEYS: string[] | undefined;
+  /** Per-key request budget per window. 0 disables the limiter entirely. */
+  RATE_LIMIT_RPM: number;
+  RATE_LIMIT_WINDOW_MS: number;
 
   // decision engine
   DECISION_ENGINE: DecisionEngineName;
@@ -142,6 +145,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       API_KEYS: env.API_KEYS
         ? env.API_KEYS.split(",").map((k) => k.trim()).filter(Boolean)
         : undefined,
+      RATE_LIMIT_RPM: num(env, "RATE_LIMIT_RPM", 240, 0, 1_000_000),
+      RATE_LIMIT_WINDOW_MS: num(env, "RATE_LIMIT_WINDOW_MS", 60_000, 1_000),
 
       DECISION_ENGINE: oneOf(env, "DECISION_ENGINE", ["auto", "systemone", "openrouter", "mock"] as const, "auto"),
       DECISION_API_KEY: optional(env, "DECISION_API_KEY") ?? openrouterKey,

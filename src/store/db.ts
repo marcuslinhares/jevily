@@ -57,6 +57,13 @@ PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
 
+-- Concurrent writers must wait for the lock rather than fail. Without a busy
+-- timeout SQLite returns SQLITE_BUSY the moment two connections reach for the
+-- write lock at the same time, which turns an ordinary multi-process deployment
+-- into intermittent "database is locked" errors. 5s is long enough for a short
+-- crawl write and well under any request timeout.
+PRAGMA busy_timeout = 5000;
+
 CREATE TABLE IF NOT EXISTS docs (
   url           TEXT PRIMARY KEY,
   domain        TEXT NOT NULL,
@@ -124,13 +131,23 @@ CREATE INDEX IF NOT EXISTS traces_created ON traces(created_at);
 
 export class Store {
   private db: DatabaseSync;
+  readonly file: string;
 
+  /**
+   * Accepts either a directory or a file path.
+   *
+   * Guessing wrong here is nasty: appending "jevily.db" to a path that already
+   * points at a file tries to `mkdir` a directory named after the database, and
+   * fails with EEXIST naming a file nobody thought was a directory.
+   */
   constructor(path?: string) {
-    const file = resolve(path ?? process.env.DATA_DIR ?? config().DATA_DIR, "jevily.db");
-    mkdirSync(dirname(file), { recursive: true });
-    this.db = new DatabaseSync(file);
+    const given = path ?? process.env.DATA_DIR ?? config().DATA_DIR;
+    const looksLikeFile = /\.db(-wal|-shm)?$/i.test(given);
+    this.file = looksLikeFile ? resolve(given) : resolve(given, "jevily.db");
+    mkdirSync(dirname(this.file), { recursive: true });
+    this.db = new DatabaseSync(this.file);
     this.db.exec(SCHEMA);
-    log.debug("store open", { file });
+    log.debug("store open", { file: this.file });
   }
 
   close(): void {
@@ -329,17 +346,31 @@ export class Store {
     return count;
   }
 
+  /**
+   * Claims up to `limit` pending urls for one worker.
+   *
+   * One statement, not a SELECT followed by an UPDATE. The two-statement version has
+   * a window between the read and the write in which a second worker selects the same
+   * rows and believes it owns them, and a page gets crawled twice — which spends
+   * politeness budget on someone else's server. A single statement has no window.
+   *
+   * `RETURNING` needs SQLite 3.35+; node:sqlite ships far newer.
+   */
   claimQueue(limit: number): QueueItem[] {
     const rows = this.db
-      .prepare(`SELECT * FROM queue WHERE status = 'pending' ORDER BY priority DESC, discovered_at LIMIT ?`)
+      .prepare(
+        `UPDATE queue
+            SET status = 'active', attempts = attempts + 1
+          WHERE url IN (
+            SELECT url FROM queue
+             WHERE status = 'pending'
+             ORDER BY priority DESC, discovered_at
+             LIMIT ?
+          )
+         RETURNING url, depth, status, priority, discovered_at, attempts, error`,
+      )
       .all(limit) as unknown as QueueRow[];
-    const stmt = this.db.prepare(`UPDATE queue SET status = 'active', attempts = attempts + 1 WHERE url = ?`);
-    const out: QueueItem[] = [];
-    for (const row of rows) {
-      stmt.run(row.url);
-      out.push(toQueue(row));
-    }
-    return out;
+    return rows.map(toQueue);
   }
 
   completeQueue(url: string, status: QueueItem["status"], error?: string): void {

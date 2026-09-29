@@ -26,7 +26,10 @@ process.env.DECISION_ENGINE = "mock";
 process.env.GENERATOR_PROVIDER = "none";
 process.env.EMBEDDING_PROVIDER = "none";
 process.env.LOG_LEVEL = "silent";
-process.env.API_KEYS = "test-key-1,test-key-2";
+process.env.API_KEYS = "test-key-1,test-key-2,rate-a,rate-b";
+// Small enough that the limit is reachable inside a test.
+process.env.RATE_LIMIT_RPM = "40";
+process.env.RATE_LIMIT_WINDOW_MS = "60000";
 
 const CORPUS = [
   {
@@ -140,6 +143,58 @@ describe("auth", () => {
   it("leaves /health open, so a probe does not need a credential", async () => {
     const res = await app.inject({ method: "GET", url: "/health" });
     expect(res.statusCode).toBe(200);
+  });
+});
+
+describe("rate limiting", () => {
+  it("sends budget headers on a successful request", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/search",
+      headers: { authorization: "Bearer rate-a" },
+      payload: { query: "backpressure" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["x-ratelimit-limit"]).toBeDefined();
+    expect(Number(res.headers["x-ratelimit-remaining"])).toBeGreaterThanOrEqual(0);
+  });
+
+  it("returns 429 with Retry-After once a key is out of budget", async () => {
+    const headers = { authorization: "Bearer rate-b" };
+    let sawLimit = false;
+    for (let i = 0; i < 300; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/search",
+        headers,
+        payload: { query: "backpressure", max_results: 1 },
+      });
+      if (res.statusCode === 429) {
+        sawLimit = true;
+        expect(res.headers["retry-after"]).toBeDefined();
+        expect(res.json().detail.error).toMatch(/rate limit/i);
+        break;
+      }
+    }
+    expect(sawLimit, "the limiter never engaged").toBe(true);
+  });
+
+  it("authenticates before limiting, so a bad key gets 401 rather than 429", async () => {
+    // Otherwise an anonymous caller could enumerate valid keys by watching which
+    // requests return a rate-limit error instead of an auth error.
+    let last = 0;
+    for (let i = 0; i < 300; i++) {
+      last = (
+        await app.inject({
+          method: "POST",
+          url: "/v1/search",
+          headers: { authorization: "Bearer not-a-real-key" },
+          payload: { query: "backpressure", max_results: 1 },
+        })
+      ).statusCode;
+      if (last !== 401) break;
+    }
+    expect(last).toBe(401);
   });
 });
 

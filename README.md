@@ -137,7 +137,12 @@ just by the crawler.
 | `verify_citations` | force citation verification on or off |
 
 The response adds `abstained`, `plan`, and `citations` alongside the usual fields.
-Other endpoints: `GET /v1/search` (query-string convenience), `/v1/extract`,
+Other endpoints: Auth is per API key (`API_KEYS`, off by default) and rate limiting is per key
+(`RATE_LIMIT_RPM`, off when 0). Auth runs first on purpose: limiting before it would
+let an anonymous caller enumerate valid keys by watching which requests return 429
+instead of 401.
+
+`GET /v1/search` (query-string convenience), `/v1/extract`,
 `/v1/crawl`, `/v1/index`, `/v1/index/rebuild`, `/v1/stats`, `/v1/trace/:id`, and
 `/v1/evaluate` for querying the decision engine directly while tuning a threshold.
 
@@ -202,7 +207,7 @@ degrading every judgement in the pipeline.
 ```bash
 npm run dev            # watch mode
 npm run build && npm start
-npm test               # 128 tests, no network, no keys
+npm test               # 183 tests, no network, no keys
 npm run typecheck
 npm run eval           # reranking recall, BM25 vs decisions
 npm run eval:rerank -- "your query"   # per-candidate gate signals

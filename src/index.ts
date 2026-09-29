@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { config } from "./config.js";
 import { log } from "./util/log.js";
+import { RateLimiter } from "./util/rate-limit.js";
+import type { FastifyRequest } from "fastify";
 import { Store } from "./store/db.js";
 import { IndexManager } from "./store/indexer.js";
 import { createEmbedder, embedMissing } from "./retrieval/vectors.js";
@@ -50,19 +52,46 @@ export async function buildServer() {
     reply.code(404).send({ detail: { error: `no route for ${request.method} ${request.url}` } });
   });
 
-  // API key auth, off unless API_KEYS is set.
+  // Auth, then rate limit. Limiting before authenticating would let an anonymous
+  // caller probe which keys exist — a valid-looking key would earn a 429 instead of
+  // a 401 — and would let one anonymous caller exhaust a shared anonymous budget.
+  const limiter =
+    c.RATE_LIMIT_RPM > 0 ? new RateLimiter({ limit: c.RATE_LIMIT_RPM, windowMs: c.RATE_LIMIT_WINDOW_MS }) : null;
+
   app.addHook("onRequest", async (request, reply) => {
-    const keys = c.API_KEYS;
-    if (!keys || keys.length === 0) return;
     if (request.url === "/health") return;
-    const header = request.headers.authorization;
-    const token = header?.startsWith("Bearer ") ? header.slice(7) : (request.headers["x-api-key"] as string | undefined);
-    if (!token || !keys.includes(token)) {
-      await reply.code(401).send({ detail: { error: "Unauthorized: missing or invalid API key." } });
+
+    const token = readKey(request);
+    if (c.API_KEYS && c.API_KEYS.length > 0) {
+      if (!token || !c.API_KEYS.includes(token)) {
+        return reply.code(401).send({ detail: { error: "Unauthorized: missing or invalid API key." } });
+      }
+    }
+
+    if (!limiter) return;
+    // Anonymous callers share one bucket. Without a key there is nothing to
+    // attribute spend to, so the bucket has to be common.
+    const verdict = limiter.take(token ?? "anonymous");
+    reply.header("X-RateLimit-Limit", String(verdict.limit));
+    reply.header("X-RateLimit-Remaining", String(verdict.remaining));
+    reply.header("X-RateLimit-Reset", String(verdict.resetSeconds));
+    if (!verdict.allowed) {
+      reply.header("Retry-After", String(verdict.retryAfterSeconds));
+      return reply
+        .code(429)
+        .send({ detail: { error: `Rate limit exceeded. Retry in ${verdict.retryAfterSeconds}s.` } });
     }
   });
 
-  return { app, store, index, embedder };
+  return { app, store, index, embedder, limiter };
+}
+
+/** The presented credential, from either header. */
+function readKey(request: FastifyRequest): string | undefined {
+  const header = request.headers.authorization;
+  if (header?.startsWith("Bearer ")) return header.slice(7).trim() || undefined;
+  const alt = request.headers["x-api-key"];
+  return typeof alt === "string" && alt.trim() ? alt.trim() : undefined;
 }
 
 export async function start(): Promise<void> {

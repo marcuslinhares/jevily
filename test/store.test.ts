@@ -178,6 +178,21 @@ describe("crawl queue", () => {
     store.enqueue([{ url: "https://q.test/1" }]);
     expect(store.pendingCount()).toBe(1);
   });
+
+  it("accepts a directory or a file path", () => {
+    // A file path used to append a second "jevily.db" and then try to mkdir a
+    // directory named after the database, failing with EEXIST.
+    const byDir = new Store(dir);
+    const byFile = new Store(join(dir, "jevily.db"));
+    try {
+      expect(byDir.file).toBe(join(dir, "jevily.db"));
+      expect(byFile.file).toBe(join(dir, "jevily.db"));
+      expect(byFile.getDoc("https://nope.test/x")).toBeNull();
+    } finally {
+      byDir.close();
+      byFile.close();
+    }
+  });
 });
 
 describe("response cache", () => {
