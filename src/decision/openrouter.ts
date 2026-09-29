@@ -61,8 +61,9 @@ export class OpenRouterDecisionEngine implements DecisionEngine {
         type: "json_schema",
         json_schema: { name: "decisions", strict: true, schema },
       },
-      // Only route to endpoints that actually support structured outputs.
-      provider: { require_parameters: ["response_format"] },
+      // Only route to endpoints that actually support structured outputs. The flag
+      // is a boolean; an array of names is rejected with a 400.
+      provider: { require_parameters: true },
       usage: { include: true },
     };
 

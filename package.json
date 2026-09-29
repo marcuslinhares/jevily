@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "index:seed": "tsx scripts/seed.ts",
     "eval": "tsx scripts/eval.ts",
-    "eval:rerank": "tsx scripts/debug-gate.ts"
+    "eval:rerank": "tsx scripts/debug-gate.ts",
+    "probe:answer": "tsx scripts/answer-probe.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

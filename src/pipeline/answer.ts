@@ -166,6 +166,17 @@ async function assessSufficiency(
   };
 }
 
+/**
+ * Decides whether to withhold the answer.
+ *
+ * The count-based floors are only a cheap filter, and they must not be able to veto
+ * a confident sufficiency verdict. "What does the high water mark do" is a question
+ * one authoritative page answers completely; blocking it for want of a second source
+ * is the abstention feature working against itself. So once the decision engine says
+ * the evidence does answer the question, its judgement wins.
+ *
+ * The thresholds here are policy, not measurement.
+ */
 function abstentionReason(
   input: AnswerStageInput,
   verdict: { sufficient: number; conflicting: number },
@@ -177,14 +188,21 @@ function abstentionReason(
   if (!c.ABSTAIN_ENABLED) return null;
   const { policy, calibrated } = input;
   if (evidence.length === 0) return "no_evidence";
-  if (evidence.length < policy.abstain.minAccepted) return "insufficient_evidence";
-  const domains = new Set(evidence.map((e) => e.doc.domain));
-  if (domains.size < policy.minDistinctDomains) return "single_source";
-  const top = Math.max(...evidence.map((e) => e.composite));
-  if (top < policy.abstain.minTopScore) return "weak_match";
+
   const required = calibrated
     ? policy.sufficiency.minSufficiency
     : policy.abstain.minSufficiencyUncalibrated;
+  // High enough that a claim of completeness is worth believing over raw counts.
+  const decisive = verdict.sufficient >= Math.max(0.8, required + 0.2);
+
+  if (!decisive) {
+    if (evidence.length < policy.abstain.minAccepted) return "insufficient_evidence";
+    const domains = new Set(evidence.map((e) => e.doc.domain));
+    if (domains.size < policy.minDistinctDomains) return "single_source";
+  }
+
+  const top = Math.max(...evidence.map((e) => e.composite));
+  if (top < policy.abstain.minTopScore) return "weak_match";
   if (verdict.sufficient < required) return "evidence_does_not_support_answer";
   return null;
 }

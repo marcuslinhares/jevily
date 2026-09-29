@@ -207,10 +207,11 @@ degrading every judgement in the pipeline.
 ```bash
 npm run dev            # watch mode
 npm run build && npm start
-npm test               # 183 tests, no network, no keys
+npm test               # 187 tests, no network, no keys
 npm run typecheck
 npm run eval           # reranking recall, BM25 vs decisions
 npm run eval:rerank -- "your query"   # per-candidate gate signals
+npm run probe:answer                  # answer path, real models (needs keys)
 npm run index:seed     # seed the index
 ```
 
@@ -256,6 +257,12 @@ pass, and the eval names the document responsible rather than assuming one.
 - The mock decision engine scores *below* BM25 on paraphrased queries. It is a
   stand-in for wiring, not a judgement model, and the eval script says so when you
   run it.
+- Answer writing and citation verification are only exercised for real by
+  `npm run probe:answer`, which needs a key. The test suite stubs the generator, so
+  it tests the wiring around the model and not the model.
+- The abstention thresholds in `policy.ts` are reasoned, not measured. `decisive`
+  in particular — the sufficiency level above which the count-based floors stop
+  applying — has no labelled data behind it yet.
 - Thresholds in `policy.ts` are starting points. They want tuning against a labelled
   set for your domain.
 - Retrieval quality is bounded by the index. If the corpus is small, so is recall,

@@ -67,7 +67,9 @@ class OpenRouterGenerator implements Generator {
         type: "json_schema",
         json_schema: { name: "result", strict: true, schema: request.schema },
       };
-      body.provider = { require_parameters: ["response_format"] };
+      // `require_parameters` is a boolean, not a list of parameter names. Sending an
+      // array is a 400 from OpenRouter, and it fails the whole generation.
+      body.provider = { require_parameters: true };
     }
 
     const maxRetries = 3;

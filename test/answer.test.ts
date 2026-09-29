@@ -13,7 +13,7 @@ import { DecisionService, createDecisionService } from "../src/decision/service.
 import { MockDecisionEngine } from "../src/decision/mock.js";
 import type { GatedCandidate } from "../src/pipeline/gate.js";
 import type { SearchRequest } from "../src/domain/types.js";
-import type { Generator } from "../src/llm/generator.js";
+import { createGenerator, type Generator } from "../src/llm/generator.js";
 process.env.DECISION_ENGINE = "mock";
 process.env.LOG_LEVEL = "silent";
 
@@ -136,6 +136,40 @@ async function run(overrides: Partial<Parameters<typeof answerStage>[0]> = {}, g
     ...overrides,
   });
 }
+
+describe("generator request shape", () => {
+  it("sends require_parameters as a boolean, not a list of names", async () => {
+    // The array form is a 400 from OpenRouter, and it failed the whole answer stage
+    // with nothing but a log line to show for it.
+    const calls: { body: Record<string, unknown> }[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init.body)) as Record<string, unknown> });
+      return {
+        ok: true,
+        status: 200,
+        statusText: "200",
+        json: async () => ({ choices: [{ message: { content: JSON.stringify({ answer: "x", claims: [] }) } }] }),
+        text: async () => "{}",
+      } as unknown as Response;
+    }) as typeof fetch;
+
+    try {
+      const generator = createGenerator();
+      if (!generator) {
+        // No key configured: the shape is asserted in the probe script instead.
+        return;
+      }
+      await generator.json({ system: "s", user: "u", schema: { type: "object" } });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    const provider = calls[0]?.body.provider as { require_parameters?: unknown } | undefined;
+    expect(provider).toBeDefined();
+    expect(typeof provider!.require_parameters).toBe("boolean");
+  });
+});
 
 describe("answer stage", () => {
   it("withholds the answer when no evidence passed the gate", async () => {
@@ -265,5 +299,66 @@ describe("answer stage", () => {
     const out = await run();
     expect(out.sufficiency.sufficient).toBeTypeOf("number");
     expect(out.sufficiency.conflicting).toBeTypeOf("number");
+  });
+
+  /** A decision engine that returns a fixed noul for every question. */
+  function fixedEngine(noul: number, name: string) {
+    return {
+      name,
+      calibrated: true,
+      evaluate: async (req: { questions: Record<string, { type?: string }> }) => {
+        const answers: Record<string, unknown> = {};
+        for (const [id, q] of Object.entries(req.questions)) {
+          answers[id] =
+            q.type === "noul" ? { type: "noul", noul } : { type: "choice", choice: "", probabilities: {}, confidence: 0 };
+        }
+        return {
+          engine: name,
+          model: "m",
+          answers,
+          usage: { inputTokens: 0, outputTokens: 0, costUsd: null, requests: 1 },
+          latencyMs: 1,
+        };
+      },
+    };
+  }
+
+  it("answers from one authoritative source when the engine is confident", async () => {
+    // The count floors must not veto a confident sufficiency verdict. "What does the
+    // high water mark do" is answered completely by one page, and blocking it for
+    // want of a second source is abstention working against itself.
+    const out = await run({
+      gated: [evidence[0]!],
+      decisions: new DecisionService(fixedEngine(0.9, "confident") as never, null),
+      generator: stubGenerator([
+        {
+          answer: "It is a threshold on the internal buffer.",
+          claims: [{ text: "It is a threshold on the internal buffer.", sources: ["a"] }],
+        },
+      ]),
+    });
+    expect(out.abstained).toBe(false);
+    expect(out.answer).toBeTruthy();
+  });
+
+  it("still withholds a single source when the engine is not confident", async () => {
+    // The floor exists for exactly this: one thin passage and a hesitant engine.
+    const out = await run({
+      gated: [evidence[0]!],
+      decisions: new DecisionService(fixedEngine(0.3, "hesitant") as never, null),
+    });
+    expect(out.abstained).toBe(true);
+    expect(out.abstainedReason).toBe("insufficient_evidence");
+  });
+
+  it("withholds on zero evidence however sure the engine sounds", async () => {
+    // Zero evidence is zero evidence. Confidence is not a substitute for having read
+    // anything.
+    const out = await run({
+      gated: [],
+      decisions: new DecisionService(fixedEngine(0.99, "confident") as never, null),
+    });
+    expect(out.abstained).toBe(true);
+    expect(out.abstainedReason).toBe("no_evidence");
   });
 });
