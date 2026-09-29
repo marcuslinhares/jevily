@@ -13,8 +13,9 @@ import { simhashSimilarity } from "../store/indexer.js";
 import type { IndexManager } from "../store/indexer.js";
 import type { Store, StoredChunk, StoredDoc } from "../store/db.js";
 import type { Embedder } from "../retrieval/vectors.js";
-import { cosine, embedQuery } from "../retrieval/vectors.js";
+import { embedQuery } from "../retrieval/vectors.js";
 import { fold, round } from "../util/text.js";
+import { log } from "../util/log.js";
 import type { SearchRequest } from "../domain/types.js";
 import type { QueryPlan } from "../decision/questions.js";
 
@@ -59,29 +60,19 @@ export async function retrieve(
 
   for (const query of queries) {
     lexicalLists.push(index.bm25.search(query, perQuery));
-    if (embedder && c.HYBRID_ENABLED) {
+
+    // The dense channel scans the whole embedded corpus, not the lexical shortlist.
+    // Confining it to BM25's own output would leave it able to re-order results but
+    // never to surface one, which is the only reason to run it: a passage that
+    // paraphrases the query without sharing its vocabulary. RRF then fuses two
+    // genuinely independent rankings, and cross-channel agreement becomes real signal.
+    if (embedder && c.HYBRID_ENABLED && index.hasVectors()) {
       try {
         const vector = await embedQuery(embedder, query);
-        if (vector) {
-          const scored: RankedId[] = [];
-          for (const hit of lexicalLists[lexicalLists.length - 1] ?? []) {
-            const chunk = store.getChunk(hit.id);
-            if (chunk?.vector) scored.push({ id: chunk.id, score: cosine(vector, chunk.vector) });
-          }
-          // The dense channel also sees chunks BM25 missed, via a wider lexical pass.
-          if (scored.length < perQuery) {
-            for (const hit of index.bm25.search(query, perQuery * 4)) {
-              if (scored.some((s) => s.id === hit.id)) continue;
-              const chunk = store.getChunk(hit.id);
-              if (chunk?.vector) scored.push({ id: chunk.id, score: cosine(vector, chunk.vector) });
-            }
-          }
-          scored.sort((a, b) => b.score - a.score);
-          denseLists.push(scored.slice(0, perQuery));
-        }
+        if (vector) denseLists.push(index.denseSearch(vector, perQuery));
       } catch (err) {
         // Dense retrieval is an enhancement; a failure must not fail the search.
-        index.stats();
+        log.warn("dense channel unavailable", { query, err: String(err) });
       }
     }
   }
@@ -130,7 +121,9 @@ export async function retrieve(
       lexical: lexicalScores.get(chunk.id) ?? null,
       dense: denseScores.get(chunk.id) ?? null,
       fused: item.score,
-      channels: fused.find((f) => f.id === item.id) ? 1 : 0,
+      // RRF already knows how many channels contributed this document. Reporting a
+      // constant here made the rerank's cross-channel tie-break a no-op.
+      channels: item.channels ?? 1,
       exactPhraseHit,
     });
     if (candidates.length >= pool) break;

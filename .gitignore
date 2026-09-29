@@ -5,3 +5,11 @@ data/
 .env
 .env.local
 coverage/
+
+# Credentials. A key file dropped in the project root is the easy mistake to make;
+# .gitignore is the backstop, not the plan. Prefer a .env (already ignored above).
+*.key
+*.key.txt
+*key*.txt
+*secret*
+*token*

@@ -2,6 +2,7 @@
 
 import { Bm25Index } from "../retrieval/bm25.js";
 import { docTokens } from "../retrieval/tokenize.js";
+import { cosine } from "../retrieval/vectors.js";
 import { detectLanguage, splitSentences, estimateTokens, clamp } from "../util/text.js";
 import { sha1, sha256 } from "../util/hash.js";
 import type { Store, StoredChunk, StoredDoc } from "./db.js";
@@ -271,11 +272,20 @@ export function simhashSimilarity(a: string, b: string): number {
 // --- index ------------------------------------------------------------------
 
 /**
- * Owns the lexical index and keeps it in step with the store.
- * Rebuild is explicit: `sync()` applies pending writes, `rebuild()` reindexes all.
+ * Owns the lexical index and the dense one, and keeps both in step with the store.
+ *
+ * The dense side is a plain in-memory map rather than a database query per search.
+ * That is a deliberate ceiling: a full cosine scan is correct to roughly 200k
+ * chunks and stays well under a frame, after which it wants an ANN index. Paying
+ * SQLite for 200k random BLOB reads on every query to support a corpus nobody has
+ * built yet is the wrong trade.
  */
 export class IndexManager {
   bm25 = new Bm25Index();
+
+  /** chunk id -> embedding. Only the chunks that have been embedded. */
+  private vectors = new Map<string, Float32Array>();
+  private vectorsLoaded = false;
 
   constructor(private readonly store: Store) {}
 
@@ -292,7 +302,55 @@ export class IndexManager {
       }
     }
     this.bm25 = fresh;
+    // Chunk ids are regenerated on re-chunking, so the vector map goes with them.
+    this.vectors.clear();
+    this.vectorsLoaded = false;
     return { chunks, docs: docs.length, ms: Date.now() - started };
+  }
+
+  // --- dense channel --------------------------------------------------------
+
+  /** Whether any chunk carries an embedding, i.e. whether the dense channel can run. */
+  hasVectors(): boolean {
+    if (!this.vectorsLoaded) this.loadVectors();
+    return this.vectors.size > 0;
+  }
+
+  vectorCount(): number {
+    if (!this.vectorsLoaded) this.loadVectors();
+    return this.vectors.size;
+  }
+
+  putVector(id: string, vector: Float32Array): void {
+    this.vectorsLoaded = true;
+    this.vectors.set(id, vector);
+  }
+
+  /**
+   * Brute-force cosine over every embedded chunk.
+   *
+   * This is the whole point of having a dense channel: it is allowed to surface a
+   * passage that shares no term with the query. Restricting the scan to the lexical
+   * shortlist would turn it into a re-ranker of BM25's own output, which is a
+   * different and much less useful thing.
+   */
+  denseSearch(queryVector: Float32Array, limit: number): { id: string; score: number }[] {
+    if (!this.vectorsLoaded) this.loadVectors();
+    const scored: { id: string; score: number }[] = [];
+    for (const [id, vector] of this.vectors) {
+      scored.push({ id, score: cosine(queryVector, vector) });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit);
+  }
+
+  private loadVectors(): void {
+    this.vectorsLoaded = true;
+    for (const doc of this.store.allDocs()) {
+      for (const chunk of this.store.chunksOf(doc.url)) {
+        if (chunk.vector) this.vectors.set(chunk.id, chunk.vector);
+      }
+    }
   }
 
   /** Adds a single document's chunks without a full rebuild. */
@@ -310,7 +368,10 @@ export class IndexManager {
   }
 
   async removeDocument(url: string): Promise<void> {
-    for (const chunk of this.store.chunksOf(url)) this.bm25.remove(chunk.id);
+    for (const chunk of this.store.chunksOf(url)) {
+      this.bm25.remove(chunk.id);
+      this.vectors.delete(chunk.id);
+    }
   }
 
   stats(): { documents: number; terms: number; avgDocLen: number } {
