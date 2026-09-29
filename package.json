@@ -1,0 +1,35 @@
+{
+  "name": "jevily",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Search API for LLM agents. Own index, own crawler, and a type-safe decision engine (Jev) for intent routing, reranking, passage gating and citation verification.",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node --disable-warning=ExperimentalWarning dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "index:seed": "tsx scripts/seed.ts",
+    "eval": "tsx scripts/eval.ts",
+    "eval:rerank": "tsx scripts/debug-gate.ts"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "fastify": "^5.12.5",
+    "linkedom": "^0.18.13",
+    "turndown": "^7.2.4",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "@types/turndown": "^5.0.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^3.2.7"
+  }
+}
