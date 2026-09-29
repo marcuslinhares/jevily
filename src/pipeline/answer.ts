@@ -14,7 +14,7 @@
 import { config } from "../config.js";
 import { mapPool } from "../util/async.js";
 import { log } from "../util/log.js";
-import { round, truncate } from "../util/text.js";
+import { fold, isStopword, round, splitSentences, truncate, words } from "../util/text.js";
 import { citationQuestions, sufficiencyQuestions } from "../decision/questions.js";
 import type { DecisionService } from "../decision/service.js";
 import type { Policy } from "./policy.js";
@@ -226,19 +226,34 @@ async function verify(
   signal?: AbortSignal,
 ): Promise<VerificationResult> {
   const byId = new Map(evidence.map((e) => [e.chunk.id, e]));
-  const questions = citationQuestions();
   // An uncalibrated engine needs a higher bar before we call a claim supported.
   const threshold = calibrated ? 0.6 : 0.7;
 
   const checks = await mapPool(written.claims, 6, async (claim) => {
     const source = byId.get(claim.sources[0] as string);
-    if (!source) return { claim, support: 0, source: null };
+    if (!source) return { claim, support: 0, source: null, quote: "" };
+    const spans = quoteSpans(source.chunk.text);
     const state = {
       claim: claim.text,
       source: { title: source.doc.title, text: truncate(source.chunk.text, 1600) },
+      spans,
     };
-    const answers = await decisions.evaluate("citation", state, questions, signal ? { signal } : {});
-    return { claim, support: round(decisions.noul(answers, "supported"), 4), source };
+    // `supported` and `span` are batched into one call: the engine already has the
+    // claim and the source, so asking which sentence carries it costs no extra
+    // round trip.
+    const answers = await decisions.evaluate(
+      "citation",
+      state,
+      citationQuestions(spans.length),
+      signal ? { signal } : {},
+    );
+    const chosen = decisions.choice(answers, "span", "none").choice;
+    return {
+      claim,
+      support: round(decisions.noul(answers, "supported"), 4),
+      source,
+      quote: resolveQuote(spans, chosen, claim.text, source.chunk.text),
+    };
   });
 
   const kept = checks.filter(
@@ -288,20 +303,98 @@ interface VerifiedClaim {
   claim: { text: string; sources: string[] };
   support: number;
   source: GatedCandidate;
+  /** The span that states the claim, always a substring of the source. */
+  quote: string;
 }
 
 function toCitations(claims: VerifiedClaim[]): Citation[] {
   return claims.map((check) => ({
     result_id: check.claim.sources[0] as string,
     url: check.source.chunk.url,
-    quote: firstSentence(check.source.chunk.text),
+    quote: check.quote,
     support: check.support,
     confidence: 1,
-    verified: true,
+    // A citation that cannot show the sentence it rests on is not verified, whatever
+    // the support score says. The score is the engine's judgement about the source;
+    // the quote is the evidence the reader can check, and claiming verification
+    // without it asserts something the response does not show.
+    verified: check.quote.length > 0,
   }));
 }
 
-function firstSentence(text: string): string {
-  const match = /^(.{40,400}?)(?:\.|\n)/s.exec(text.trim());
-  return truncate((match?.[1] ?? text).replace(/\s+/g, " ").trim(), 300);
+/** Sentences long enough to be worth offering as a quote. */
+function quoteSpans(text: string): string[] {
+  return splitSentences(text)
+    .map((s) => s.replace(/\s+/g, " ").trim())
+    .filter((s) => s.length >= 30)
+    .slice(0, 8);
 }
+
+/**
+ * The span a citation should quote.
+ *
+ * The engine's pick wins, because choosing which sentence carries a claim is a
+ * judgement and this project does not make judgements with string matching. The
+ * lexical fallback exists for the case where the engine declines, answers `none`, or
+ * names a span that is not in the list — a citation still has to show something, and
+ * an empty quote is worse than an approximate one.
+ *
+ * The result is always a substring of the source, so a reader can find it.
+ */
+function resolveQuote(
+  spans: string[],
+  chosen: string,
+  claim: string,
+  sourceText: string,
+): string {
+  if (chosen && chosen !== "none") {
+    const index = Number.parseInt(chosen, 10);
+    if (Number.isInteger(index) && index >= 1 && index <= spans.length) {
+      return truncate(spans[index - 1]!, 300);
+    }
+  }
+  if (spans.length === 0) return quoteFallback(sourceText);
+  return truncate(bestLexicalSpan(claim, spans) ?? quoteFallback(sourceText), 300);
+}
+
+/**
+ * Last resort for a citation that must show something. A citation with a support
+ * score and an empty quote asserts verification while displaying no evidence, which
+ * is worse than the generic first sentence it replaced.
+ */
+function quoteFallback(sourceText: string): string {
+  const text = sourceText.replace(/\s+/g, " ").trim();
+  if (text.length > 0) return truncate(text, 300);
+  return "";
+}
+
+/**
+ * Highest content-word overlap between the claim and a span, so a fallback quote is
+ * at least about the same subject as the claim it is attached to.
+ */
+function bestLexicalSpan(claim: string, spans: string[]): string | null {
+  const claimTerms = new Set(
+    words(claim)
+      .map((w) => fold(w))
+      .filter((w) => w.length > 2 && !isStopword(w)),
+  );
+  if (claimTerms.size === 0) return null;
+
+  let best: string | null = null;
+  let bestScore = 0;
+  for (const span of spans) {
+    const spanTerms = new Set(
+      words(span)
+        .map((w) => fold(w))
+        .filter((w) => w.length > 2 && !isStopword(w)),
+    );
+    let overlap = 0;
+    for (const term of claimTerms) if (spanTerms.has(term)) overlap++;
+    if (overlap > bestScore) {
+      bestScore = overlap;
+      best = span;
+    }
+  }
+  return bestScore > 0 ? best : null;
+}
+

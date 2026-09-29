@@ -12,7 +12,7 @@
  * decision engine only decides *whether* and *what kind*.
  */
 
-import type { Question } from "./types.js";
+import type { Question, QuestionContent } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // 1. Query understanding
@@ -485,8 +485,22 @@ export function sufficiencyQuestions(): Record<string, Question> {
 // 5. Citation verification, per (claim, source)
 // ---------------------------------------------------------------------------
 
-export function citationQuestions(): Record<string, Question> {
-  return {
+/**
+ * Citation verification, per (claim, source).
+ *
+ * `spanCount` adds a second question to the same batch, so the engine picks which
+ * sentence of the source actually states the claim. The batch is evaluated in one
+ * call, so this costs no extra round trip — only a few more tokens in a request
+ * that is already sending the claim and the source.
+ *
+ * It exists because a citation whose quote is the first sentence of the source does
+ * not verify anything. Three different claims from one page all quoted "This guide
+ * will help you get started debugging your Node" at support 0.94-0.98: the support
+ * number was honest, the evidence shown beside it was not. A reader checking a
+ * citation needs the span that carries the claim, not a summary of the page.
+ */
+export function citationQuestions(spanCount = 0): Record<string, Question> {
+  const base: Record<string, Question> = {
     supported: {
       type: "noul",
       instructions: {
@@ -503,6 +517,27 @@ export function citationQuestions(): Record<string, Question> {
       },
     },
   };
+
+  if (spanCount > 0) {
+    const criteria: Record<string, QuestionContent | null> = {
+      none: "No span states the claim. The source is only topically related to it.",
+    };
+    for (let i = 1; i <= spanCount; i++) {
+      criteria[String(i)] = "`spans`[" + String(i - 1) + "] states the claim, or entails it.";
+    }
+    base.span = {
+      type: "choice",
+      instructions: {
+        question:
+          "Which span of the source states the substance of `claim`? Answer `none` if no span does. Pick the single most directly supporting span, not the most on-topic one.",
+        claim: "`claim`",
+        spans: "`spans`",
+      },
+      criteria,
+    };
+  }
+
+  return base;
 }
 
 /** Builds a one-off question for a single call (used by /evaluate and tests). */

@@ -171,6 +171,145 @@ describe("generator request shape", () => {
   });
 });
 
+describe("citation quotes", () => {
+  /** A page whose chunks all start with the same generic sentence. */
+  const genericPage = [
+    "This guide will help you get started debugging your Node.js apps and scripts.",
+    "When started with the --inspect switch, a Node.js process listens for a debugging client on port 9229.",
+    "We recommend that you never have the debugger listen on a public IP address.",
+  ].join(" ");
+
+  const page = candidate("a", "nodejs.org", 0.8, genericPage);
+
+  /**
+   * An engine that supports everything and picks a span per call. Claims are
+   * evaluated one at a time, so the stub has to advance — a stub that always
+   * answered the same index would hide the behaviour under test.
+   */
+  function spanEngine(indices: string[]) {
+    let call = 0;
+    return {
+      name: "span",
+      calibrated: true,
+      evaluate: async (req: { questions: Record<string, { type?: string }> }) => {
+        const answers: Record<string, unknown> = {};
+        for (const [id, q] of Object.entries(req.questions)) {
+          if (id === "span") {
+            answers[id] = {
+              type: "choice",
+              choice: indices[Math.min(call, indices.length - 1)] as string,
+              probabilities: {},
+              confidence: 1,
+            };
+            call++;
+          } else {
+            answers[id] = { type: "noul", noul: 0.9 };
+          }
+        }
+        return {
+          engine: "span",
+          model: "m",
+          answers,
+          usage: { inputTokens: 0, outputTokens: 0, costUsd: null, requests: 1 },
+          latencyMs: 1,
+        };
+      },
+    };
+  }
+
+  it("quotes the span the engine names, not the first sentence", async () => {
+    // The first sentence of every chunk on this page is the same generic
+    // introduction. Quoting it gave three different claims the same citation at
+    // support 0.94-0.98: an honest support number attached to evidence that proved
+    // nothing.
+    const out = await run({
+      gated: [page],
+      calibrated: true,
+      policy: resolvePolicy(true),
+      decisions: new DecisionService(spanEngine(["2", "3"]) as never, null),
+      generator: stubGenerator([
+        {
+          answer: "The debugger listens on 9229 and should not be public.",
+          claims: [
+            { text: "The debugger listens on port 9229.", sources: ["a"] },
+            { text: "The debugger should never listen on a public IP.", sources: ["a"] },
+          ],
+        },
+      ]),
+    });
+
+    const quotes = (out.citations ?? []).map((c) => c.quote);
+    expect(quotes).toHaveLength(2);
+    // Each claim is quoted from a different span of the same page, and neither is
+    // the page's generic opening line.
+    expect(new Set(quotes).size).toBe(2);
+    expect(quotes.join(" ")).not.toContain("This guide will help you get started");
+    expect(quotes.join(" ")).toContain("--inspect");
+    expect(quotes.join(" ")).toContain("public IP");
+    // Every quote is a real substring of the source, so a reader can find it.
+    for (const q of quotes) expect(genericPage).toContain(q.slice(0, 40));
+  });
+
+  it("falls back to the claim's own vocabulary when the engine declines", async () => {
+    // A citation still has to show something, and an empty quote is worse than an
+    // approximate one. `none` means the engine found no supporting span.
+    const out = await run({
+      gated: [page],
+      calibrated: true,
+      policy: resolvePolicy(true),
+      decisions: new DecisionService(spanEngine(["none"]) as never, null),
+      generator: stubGenerator([
+        {
+          answer: "The debugger listens on 9229.",
+          claims: [{ text: "debugger listens on port 9229", sources: ["a"] }],
+        },
+      ]),
+    });
+
+    const quote = (out.citations ?? [])[0]?.quote ?? "";
+    expect(quote.length).toBeGreaterThan(0);
+    expect(genericPage).toContain(quote.slice(0, 40));
+  });
+
+  it("does not claim verification for a citation it cannot quote", async () => {
+    // A citation with a support score and an empty quote asserts verification while
+    // showing no evidence, which is worse than the generic quote it replaced.
+    const empty = candidate("a", "nodejs.org", 0.8, "   ");
+    const out = await run({
+      gated: [empty],
+      calibrated: true,
+      policy: resolvePolicy(true),
+      decisions: new DecisionService(spanEngine(["1"]) as never, null),
+      generator: stubGenerator([
+        {
+          answer: "Something.",
+          claims: [{ text: "A claim about nothing.", sources: ["a"] }],
+        },
+      ]),
+    });
+    for (const c of out.citations ?? []) {
+      if (c.quote.length === 0) expect(c.verified).toBe(false);
+    }
+  });
+
+  it("ignores a span index that is not in the list", async () => {
+    const out = await run({
+      gated: [page],
+      calibrated: true,
+      policy: resolvePolicy(true),
+      decisions: new DecisionService(spanEngine(["99"]) as never, null),
+      generator: stubGenerator([
+        {
+          answer: "The debugger listens on 9229.",
+          claims: [{ text: "debugger listens on port 9229", sources: ["a"] }],
+        },
+      ]),
+    });
+    const quote = (out.citations ?? [])[0]?.quote ?? "";
+    expect(quote).not.toContain("This guide will help");
+  });
+});
+
 describe("answer stage", () => {
   it("withholds the answer when no evidence passed the gate", async () => {
     const out = await run({ gated: [] });
