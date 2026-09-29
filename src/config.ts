@@ -13,10 +13,18 @@
 export type DecisionEngineName = "auto" | "systemone" | "openrouter" | "mock";
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
 
-/** Providers that speak the System One protocol at `{base}/v1/systemone`. */
+/**
+ * Providers that speak the System One protocol at `{base}/v1/systemone`.
+ *
+ * Both entries use the *bare* `jev-latest` on purpose. OpenRouter maps bare System
+ * One ids onto the `typesafe/` namespace itself, and `typesafe/jev-latest` is not a
+ * real model id — only `typesafe/jev-1.13` is, which is what the alias resolves to.
+ * The trace records the pinned build the provider actually served, so relying on the
+ * alias costs nothing in observability.
+ */
 export const SYSTEMONE_PROVIDERS = {
   typesafe: { baseUrl: "https://api.typesafe.ai", model: "jev-latest" },
-  openrouter: { baseUrl: "https://openrouter.ai/api", model: "typesafe/jev-latest" },
+  openrouter: { baseUrl: "https://openrouter.ai/api", model: "jev-latest" },
 } as const;
 
 export interface Config {

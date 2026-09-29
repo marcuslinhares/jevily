@@ -51,6 +51,33 @@ export interface AbstainThresholds {
   minSufficiencyUncalibrated: number;
 }
 
+/**
+ * How much of the recency weight survives, indexed by the query plan's time horizon.
+ *
+ * Recency cannot be scored in the abstract. A page *about* a release notes looks
+ * maximally current without being a current answer, and a conceptual explainer looks
+ * stale without being a wrong one. Applying the weight uniformly means a bug report
+ * about "the drain never fires" gets outranked by the changelog for the version that
+ * broke it.
+ *
+ * So the weight is scaled by what the question actually asked for. On an evergreen
+ * question it disappears; on a question that needs current sources it applies in full.
+ */
+export const RECENCY_BY_TIME_HORIZON = [0, 0.25, 1, 1] as const;
+
+export function recencyWeight(weights: RerankThresholds["weights"], timeHorizon: number): number {
+  const index = Math.min(Math.max(Math.round(timeHorizon), 0), RECENCY_BY_TIME_HORIZON.length - 1);
+  return weights.recency * (RECENCY_BY_TIME_HORIZON[index] as number);
+}
+
+/** Reweights for one query, so the composite is relative to what was asked. */
+export function weightsForHorizon(
+  weights: RerankThresholds["weights"],
+  timeHorizon: number,
+): RerankThresholds["weights"] {
+  return { ...weights, recency: recencyWeight(weights, timeHorizon) };
+}
+
 export interface Policy {
   rerank: RerankThresholds;
   gate: GateThresholds;

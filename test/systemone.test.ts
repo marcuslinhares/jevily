@@ -82,7 +82,7 @@ function stubFetch(body: unknown, init?: { status?: number }) {
 describe("System One wire contract", () => {
   it("posts the documented request shape to /v1/systemone", async () => {
     const calls = stubFetch(RESPONSE);
-    const engine = new SystemOneEngine("key-123", "https://openrouter.ai/api", "typesafe/jev-latest");
+    const engine = new SystemOneEngine("key-123", "https://openrouter.ai/api", "jev-latest");
 
     await engine.evaluate({ state: { ticket: "checkout shows a blank page" }, questions: QUESTIONS });
 
@@ -93,7 +93,7 @@ describe("System One wire contract", () => {
 
     const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
     expect(Object.keys(sent).sort()).toEqual(["model", "questions", "state"]);
-    expect(sent.model).toBe("typesafe/jev-latest");
+    expect(sent.model).toBe("jev-latest");
     expect(sent.questions).toEqual(QUESTIONS);
   });
 
@@ -228,10 +228,14 @@ describe("engine resolution", () => {
     expect(resolveDecisionEngine(loadConfig({}))).toBe("mock");
   });
 
-  it("derives the OpenRouter base url and namespaced model id together", () => {
+  it("derives the OpenRouter base url and model id together", () => {
     const c = loadConfig({ OPENROUTER_API_KEY: "sk-or-x" });
     expect(c.DECISION_BASE_URL).toBe("https://openrouter.ai/api");
-    expect(c.DECISION_MODEL).toBe("typesafe/jev-latest");
+    // Bare on purpose: OpenRouter maps bare System One ids onto the typesafe/
+    // namespace itself, and `typesafe/jev-latest` is not a real model id. Only
+    // `typesafe/jev-1.13` exists, and that is what the alias resolves to.
+    expect(c.DECISION_MODEL).toBe("jev-latest");
+    expect(c.DECISION_MODEL).not.toBe("typesafe/jev-latest");
     expect(c.DECISION_API_KEY).toBe("sk-or-x");
   });
 

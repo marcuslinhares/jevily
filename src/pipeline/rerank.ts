@@ -16,7 +16,7 @@ import { log } from "../util/log.js";
 import { clamp, round } from "../util/text.js";
 import type { DecisionService } from "../decision/service.js";
 import { rerankQuestions } from "../decision/questions.js";
-import { constraintPenalty, type Policy, type RerankThresholds } from "./policy.js";
+import { constraintPenalty, weightsForHorizon, type Policy, type RerankThresholds } from "./policy.js";
 import type { Candidate } from "./retrieve.js";
 
 export interface RerankInput {
@@ -26,6 +26,12 @@ export interface RerankInput {
   constraintRequired: boolean;
   /** Hard phrase from the query, used as a tie-breaker. */
   exactPhraseHit: (candidate: Candidate) => boolean;
+  /**
+   * How much the question needs current sources, from the query plan. Scales the
+   * recency weight: on an evergreen question a changelog must not outrank the
+   * page that actually explains the problem.
+   */
+  timeHorizon?: number;
 }
 
 export interface RerankedCandidate extends Candidate {
@@ -44,9 +50,14 @@ export async function rerank(
   const c = config();
   const shortlist = input.candidates.slice(0, Math.max(10, c.DEFAULT_CANDIDATES_RERANKED));
   const questions = rerankQuestions();
+  // Recency only counts for as much as the question asked for. See policy.ts.
+  const tuned: RerankThresholds = {
+    ...policy.rerank,
+    weights: weightsForHorizon(policy.rerank.weights, input.timeHorizon ?? 1),
+  };
 
   const scored = await mapPool(shortlist, c.DECISION_CONCURRENCY, async (candidate) =>
-    scoreOne(decisions, input, candidate, questions, policy.rerank, signal),
+    scoreOne(decisions, input, candidate, questions, tuned, signal),
   );
 
   const results: RerankedCandidate[] = [];

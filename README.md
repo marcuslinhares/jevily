@@ -217,6 +217,18 @@ mistaken for a ranking one.
 DECISION_API_KEY=... npm run eval   # or OPENROUTER_API_KEY=...
 ```
 
+The set is built to make reranking measurable rather than to flatter it. Every query
+is paraphrased away from the corpus's own wording, and every gold passage is paired
+with a distractor that shares most of the query's terms while answering a different
+question — otherwise BM25 scores 100% and the reranker is never asked to do
+anything. Results are reported twice: overall, and restricted to the queries the
+reranker can actually act on, since a passage that never reached the pool is a
+retrieval failure no re-ranker can repair.
+
+With a calibrated engine on an 11-query set: recall@1 goes 55% -> 82% overall, and
+0% -> 100% on the four queries BM25 ranked wrong. One query regresses, and the eval
+names the document responsible rather than assuming one.
+
 ## Limits
 
 - Dense retrieval is a brute-force cosine scan. Correct to roughly 200k chunks,

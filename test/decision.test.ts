@@ -1,7 +1,7 @@
 import { MockDecisionEngine } from "../src/decision/mock.js";
 import { DecisionService, createDecisionService } from "../src/decision/service.js";
 import { route, applyDomainDiversity, evidenceScore } from "../src/pipeline/gate.js";
-import { resolvePolicy, constraintPenalty } from "../src/pipeline/policy.js";
+import { resolvePolicy, constraintPenalty, recencyWeight, weightsForHorizon } from "../src/pipeline/policy.js";
 import { citationQuestions, gateQuestions, queryUnderstandingQuestions, rerankQuestions } from "../src/decision/questions.js";
 import { buildAnswerSchemaForTest, type TypedSchema } from "./helpers/schema.js";
 
@@ -145,6 +145,32 @@ describe("policy", () => {
 
   it("penalizes a violated constraint harder when the engine is uncalibrated", () => {
     expect(constraintPenalty(true, resolvePolicy(true))).toBeLessThan(constraintPenalty(true, resolvePolicy(false)));
+  });
+
+  it("scales the recency weight by what the question actually asked for", () => {
+    const weights = resolvePolicy(true).rerank.weights;
+    // An evergreen question must not let a changelog outrank the page that explains
+    // the problem. A page *about* a release looks maximally current without being a
+    // current answer, so on a timeless question the weight goes to zero.
+    expect(recencyWeight(weights, 0)).toBe(0);
+    expect(recencyWeight(weights, 1)).toBeLessThan(weights.recency);
+    expect(recencyWeight(weights, 2)).toBe(weights.recency);
+    expect(recencyWeight(weights, 3)).toBe(weights.recency);
+  });
+
+  it("clamps an out-of-range horizon instead of producing a nonsense weight", () => {
+    const weights = resolvePolicy(true).rerank.weights;
+    expect(recencyWeight(weights, -5)).toBe(0);
+    expect(recencyWeight(weights, 99)).toBe(weights.recency);
+  });
+
+  it("leaves the other weights alone, and does not mutate the policy", () => {
+    const weights = resolvePolicy(true).rerank.weights;
+    const evergreen = weightsForHorizon(weights, 0);
+    expect(evergreen.relevance).toBe(weights.relevance);
+    expect(evergreen.authority).toBe(weights.authority);
+    expect(evergreen.quality).toBe(weights.quality);
+    expect(weights.recency).toBeGreaterThan(0);
   });
 });
 

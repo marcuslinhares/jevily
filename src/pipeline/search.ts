@@ -142,6 +142,7 @@ export async function runSearch(
       candidates,
       constraintRequired,
       exactPhraseHit: (candidate) => candidate.exactPhraseHit,
+      timeHorizon: rawPlan.timeHorizon,
     },
     signal,
   );
