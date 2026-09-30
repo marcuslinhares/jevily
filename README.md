@@ -451,6 +451,42 @@ a dense list keyed by chunk id — two id spaces that never intersect, so no can
 could be promoted across channels and the hybrid reproduced the lexical numbers exactly
 at every k. Identical numbers were the tell.
 
+### The server, actually running
+
+Everything above this point was measured by calling the pipeline directly. The HTTP
+surface had only ever been exercised through `app.inject`, with a configuration the
+real server never sees. Booting it against the crawled corpus:
+
+```bash
+DATA_DIR=/tmp/opencode/jevily-corpus OPENROUTER_API_KEY=... npm start
+curl localhost:3000/health
+curl -X POST localhost:3000/v1/search -H 'content-type: application/json' \
+  -d '{"query":"what happens when a stream buffer fills up","include_answer":"basic","verify_citations":true}'
+```
+
+`/health` reports the engine honestly — name, whether it is calibrated, the base URL,
+the model — which is the first thing to read when a number looks wrong, because
+`DECISION_ENGINE=openrouter` silently selects the *uncalibrated* chat engine and
+therefore the stricter threshold set. The same model, the same corpus and the same
+query behave differently under the two engines, and nothing in the response says so
+except this field.
+
+The search response carried the citation fix into production: three claims citing one
+page, support 0.95, 0.95 and 0.97, each quoting the sentence that states it. Before the
+fix the same three claims quoted the page's first sentence three times. It also
+confirms why the fact labels read low. The claims here are narrow — "the `.write()`
+function returns false" — and score 0.95+, while the compositional label covering the
+same ground scored 0.54. The system is scoring claims well; the label was the problem.
+
+Auth and rate limiting behave as designed over real sockets: no key 401, wrong key
+401, `x-api-key` and `Authorization: Bearer` both accepted, `/health` exempt. Five
+requests a minute, the fifth 429 with `Retry-After: 46`, and a second key keeps its own
+bucket. The first response reading `remaining=3` rather than 4 is correct, not an
+off-by-one — the two auth tests before it had already spent that bucket.
+
+`API_KEYS` is a comma-separated list, not JSON. Passing `["a","b"]` produces one
+literal key and a 401 for everything, which looks exactly like auth being broken.
+
 ## Limits
 
 - Dense retrieval is a brute-force cosine scan. Measured at 729 chunks: 0.1–2ms per
