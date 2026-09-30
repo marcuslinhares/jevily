@@ -34,6 +34,8 @@ export interface AnswerStageInput {
   evidenceLimit: number;
   generator: Generator | null;
   decisions: DecisionService;
+  /** How many judgements came back unreadable and were replaced by defaults. */
+  degraded?: number;
 }
 
 export interface AnswerStageOutput {
@@ -187,6 +189,15 @@ function abstentionReason(
   const c = config();
   if (!c.ABSTAIN_ENABLED) return null;
   const { policy, calibrated } = input;
+
+  // Withholding is the whole point of this stage, so an engine that did not answer
+  // cannot be treated as one that did. A missing or unreadable judgement returns a
+  // default noul, which is a plausible number rather than an absent one: an auth
+  // failure degraded every verdict to 0.5 and the pipeline went on to write answers
+  // and issue citations on top of them. Those answers looked complete and were
+  // unfounded, which is the one thing this project exists to avoid.
+  if ((input.degraded ?? 0) > 0) return "decision_engine_unavailable";
+
   if (evidence.length === 0) return "no_evidence";
 
   const required = calibrated

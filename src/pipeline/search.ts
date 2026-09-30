@@ -198,6 +198,9 @@ export async function runSearch(
       evidenceLimit,
       generator,
       decisions,
+      // Read after every stage above, so it reflects the whole pipeline rather than
+      // just the sufficiency call.
+      degraded: decisions.degraded,
     },
     signal,
   );

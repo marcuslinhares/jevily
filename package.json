@@ -20,7 +20,9 @@
     "probe:answer": "tsx scripts/answer-probe.ts",
     "probe:dense": "tsx scripts/dense-probe.ts",
     "probe:corpus": "tsx scripts/corpus-probe.ts",
-    "probe:gate": "tsx scripts/gate-probe.ts"
+    "probe:gate": "tsx scripts/gate-probe.ts",
+    "probe:facts": "tsx scripts/fact-probe.ts",
+    "review:answers": "tsx scripts/answer-review.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

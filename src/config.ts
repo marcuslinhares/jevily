@@ -135,9 +135,30 @@ function oneOf<T extends string>(env: NodeJS.ProcessEnv, key: string, allowed: r
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   try {
     const openrouterKey = optional(env, "OPENROUTER_API_KEY");
-    // A System One key may be either provider's. If the host is OpenRouter, the
-    // model id has to carry the `typesafe/` namespace, so both are derived together.
-    const baseUrl = str(env, "DECISION_BASE_URL", openrouterKey ? SYSTEMONE_PROVIDERS.openrouter.baseUrl : SYSTEMONE_PROVIDERS.typesafe.baseUrl);
+    // A System One key may be either provider's, and which one it is decides the
+    // endpoint it has to be sent to. The key and the host are therefore derived from
+    // the same question — is the key we are actually going to use an OpenRouter key —
+    // rather than from two separate ones. Deciding the host from the presence of
+    // OPENROUTER_API_KEY while taking the key from DECISION_API_KEY sends a TypeSafe
+    // key to OpenRouter whenever both are set, and OpenRouter answers 401. Every
+    // judgement then degrades to its default while the response still looks complete.
+    const decisionKey = optional(env, "DECISION_API_KEY") ?? openrouterKey;
+    // The identity check needs a key on both sides: with no key configured at all,
+    // `decisionKey === openrouterKey` is `undefined === undefined` and would send a
+    // keyless client to OpenRouter rather than to TypeSafe.
+    // An OpenRouter key identifies itself by prefix, so it is recognised wherever it
+    // came from. With no key at all there is nothing to route, and the TypeSafe
+    // default stands.
+    const keyIsOpenRouter =
+      decisionKey !== undefined &&
+      (decisionKey === openrouterKey || /^sk-or-v1-/.test(decisionKey));
+    const baseUrl = str(
+      env,
+      "DECISION_BASE_URL",
+      keyIsOpenRouter
+        ? SYSTEMONE_PROVIDERS.openrouter.baseUrl
+        : SYSTEMONE_PROVIDERS.typesafe.baseUrl,
+    );
     const defaultModel = str(
       env,
       "DECISION_MODEL",
@@ -157,7 +178,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       RATE_LIMIT_WINDOW_MS: num(env, "RATE_LIMIT_WINDOW_MS", 60_000, 1_000),
 
       DECISION_ENGINE: oneOf(env, "DECISION_ENGINE", ["auto", "systemone", "openrouter", "mock"] as const, "auto"),
-      DECISION_API_KEY: optional(env, "DECISION_API_KEY") ?? openrouterKey,
+      DECISION_API_KEY: decisionKey,
       DECISION_BASE_URL: baseUrl.replace(/\/$/, ""),
       DECISION_MODEL: defaultModel,
       DECISION_CONCURRENCY: num(env, "DECISION_CONCURRENCY", 8, 1, 64),

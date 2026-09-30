@@ -208,7 +208,7 @@ degrading every judgement in the pipeline.
 ```bash
 npm run dev            # watch mode
 npm run build && npm start
-npm test               # 195 tests, no network, no keys
+npm test               # 206 tests, no network, no keys
 npm run typecheck
 npm run eval           # reranking recall, BM25 vs decisions
 npm run eval:rerank -- "your query"   # per-candidate gate signals
@@ -347,6 +347,42 @@ count built on it will be wrong in whichever direction the answer happens to com
 from. Whether those four answers are actually right is a judgement about prose, which
 this suite cannot make and should not pretend to.
 
+### Labelling by fact instead of by page
+
+`npm run probe:facts` replaces the page labels with the substance each answer has to
+convey, and asks the decision engine — the same `supported` question the citation
+verifier uses — whether any returned passage states it. That makes the check
+independent of which page the retriever preferred.
+
+The engine is well calibrated for this, which was worth confirming before trusting
+anything built on it: the stream `highWaterMark` fact scores 0.89 against the
+sentence that states it and 0.01 against a deliberately impossible one.
+
+| | |
+| --- | --- |
+| labelled page present in results | 14/24 |
+| fact stated by a returned passage | 6/24 |
+
+The four cases where the fact is stated but the labelled page is absent are the page
+metric being simply wrong, and they are the ones the earlier reading had dismissed as
+confident mistakes. The twelve in the other direction are not the metric being wrong
+twice: the correct page came back, and the passage from it did not state the fact. The
+stream case shows why. The page has 33 chunks; the one returned is chunk 15, which
+says the buffer "has exceeded the highWaterMark" and stops mid-sentence. The part
+that says to wait for `drain` is a different chunk of the same page, and it did not
+come back. noul 0.51 is the right verdict on that passage — it mentions the mechanism
+without stating the fact.
+
+So the two numbers describe different failures, and the second one is about chunking.
+A chunk here is a median of 4 sentences, 17% of its page, and the gate keeps about 2.6
+of the 8.4 chunks a page has. The answer stage therefore sees a thin, arbitrary slice
+of the right page — which is also why sufficiency lands at 0.61 against a threshold of
+0.55, and why the withheld rate hovers near half. The thresholds are not the thing to
+adjust; the evidence handed to the verdict is.
+
+The fact labels are still written by the same hand as the queries, so this removes the
+page preference from the metric and nothing else.
+
 ## Probes
 
 Four things are only verified against real services, because stubbing them would test
@@ -389,7 +425,14 @@ at every k. Identical numbers were the tell.
   it tests the wiring around the model and not the model.
 - The abstention thresholds in `policy.ts` are reasoned, not measured. `decisive`
   in particular — the sufficiency level above which the count-based floors stop
-  applying — has no labelled data behind it yet.
+  applying — has no labelled data behind it yet. What the real corpus does show is
+  that the evidence handed to the verdict is a thin slice of the right page, which
+  puts sufficiency near its threshold and the withheld rate near half; the evidence
+  is the thing to change, not the number.
+- A degraded decision engine now withholds the answer with
+  `decision_engine_unavailable` rather than writing prose on default judgements. A
+  missing noul reads as 0.5, which is a plausible number rather than an absent one,
+  and an auth failure used to produce complete-looking answers that were unfounded.
 - Thresholds in `policy.ts` are starting points. They want tuning against a labelled
   set for your domain. The real-corpus run above is a first look at how they behave
   off-distribution, not a fit.
