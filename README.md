@@ -383,6 +383,47 @@ adjust; the evidence handed to the verdict is.
 The fact labels are still written by the same hand as the queries, so this removes the
 page preference from the metric and nothing else.
 
+### The labels are now the bottleneck, not the pipeline
+
+`npm run probe:siblings` asks where the answer lives: in a returned chunk, in a sibling
+chunk of a page already retrieved, or nowhere. On a verified 87-document corpus:
+
+| | |
+| --- | --- |
+| stated in a returned chunk | 8/24 |
+| stated in a sibling chunk of a page already retrieved | 1/24 |
+| stated only elsewhere in the corpus | 3/24 |
+| not stated anywhere in the corpus | 12/24 |
+
+Only one case would be reached by expanding a retrieved page's evidence, so building
+context expansion would be fixing a single query out of twenty-four. The measurement
+argues against the fix I expected to build.
+
+The twelve are not a chunking defect either. Taking the clearest one, "what happens
+when a stream buffer fills up", the backpressure page has 33 chunks and the best of
+them scores 0.54. Read verbatim, that chunk says the data buffer exceeding the
+`highWaterMark` makes `.write()` return false, that this pauses the incoming Readable
+stream, and that a `drain` event resumes the flow. It states the fact. The label says
+"the *producer* is expected to wait for the drain event", and the page says the
+*Readable* is paused and resumed. The engine scored 0.54 because the scopes differ,
+which is the question it was asked and the right answer to it.
+
+So the fact is compositional: no single documentation page states it in one sentence,
+because the label fused three separate statements and then attributed them to a
+different actor than the page does. Reading the passage is what found that, and no
+aggregate would have.
+
+The lesson is about the ruler rather than the system. Four times a measurement on this
+corpus turned out to be about the labels, and the fix each time was a better label —
+except the last one, where the label was made more demanding than the document is.
+`probe:corpus` now refuses to run unless every labelled page is present in the index,
+because a run against a 39-document database printed sixteen "not in the corpus"
+verdicts in a table indistinguishable from a correct one.
+
+What this leaves is a judgement about prose that the suite should not make on its own:
+whether a passage that states the fact in its own words counts as answering the
+question. A label per query is the wrong granularity for a documentation corpus.
+
 ## Probes
 
 Four things are only verified against real services, because stubbing them would test

@@ -23,6 +23,7 @@ import { createGenerator } from "../src/llm/generator.js";
 import { runSearch } from "../src/pipeline/search.js";
 import { citationQuestions } from "../src/decision/questions.js";
 import { CORPUS_FACTS } from "./helpers/corpus-facts.js";
+import { requireCorpus } from "./helpers/corpus-check.js";
 import type { SearchRequest } from "../src/domain/types.js";
 
 const DB_DIR = process.env.EVAL_CORPUS ?? "/tmp/opencode/jevily-corpus";
@@ -64,8 +65,13 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // Before anything is measured. A run against the wrong index prints a
+  // well-formed table of numbers that describe a corpus these labels were not
+  // written for, which is the most convincing kind of wrong.
+  requireCorpus(store, "probe:facts");
+
   process.stdout.write(
-    `\ncorpus: ${store.allDocs().length} documents\n` +
+    `\n` +
       `engine: ${engine.name} (${decisions.calibrated ? "calibrated" : "uncalibrated"})\n` +
       `cases:  ${CORPUS_FACTS.length}\n` +
       `a passage states the fact at noul >= ${STATES_FACT}\n`,

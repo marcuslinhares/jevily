@@ -22,7 +22,8 @@
     "probe:corpus": "tsx scripts/corpus-probe.ts",
     "probe:gate": "tsx scripts/gate-probe.ts",
     "probe:facts": "tsx scripts/fact-probe.ts",
-    "review:answers": "tsx scripts/answer-review.ts"
+    "review:answers": "tsx scripts/answer-review.ts",
+    "probe:siblings": "tsx scripts/sibling-probe.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
