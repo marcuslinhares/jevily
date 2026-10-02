@@ -26,9 +26,10 @@ import { retrieve } from "../src/pipeline/retrieve.js";
 import type { QueryPlan } from "../src/decision/questions.js";
 import type { SearchRequest } from "../src/domain/types.js";
 import { chunkStats } from "./helpers/chunk-stats.js";
+import { CORPUS_DIR } from "./helpers/corpus-check.js";
 import { CORPUS_GOLD } from "./helpers/corpus-gold.js";
 
-const DB_DIR = "/tmp/opencode/jevily-corpus";
+const DB_DIR = CORPUS_DIR;
 // The canonical Learn docs live at /learn, not /en/learn: nodejs.org publishes the
 // learn section in its dedicated sitemap under /learn URLs, while /en/learn is a
 // locale alias that the sitemap does not list. Seeding the alias with a path scope

@@ -13,3 +13,8 @@ coverage/
 *key*.txt
 *secret*
 *token*
+
+# Crawled corpus. Every measurement in the README is taken against this, so it is
+# deliberately not in /tmp: a cleaned tmpdir silently invalidates a day of probing
+# and the next run reports numbers for an empty index.
+.corpus/

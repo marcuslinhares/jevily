@@ -23,10 +23,10 @@ import { createGenerator } from "../src/llm/generator.js";
 import { runSearch } from "../src/pipeline/search.js";
 import { citationQuestions } from "../src/decision/questions.js";
 import { CORPUS_FACTS } from "./helpers/corpus-facts.js";
-import { requireCorpus } from "./helpers/corpus-check.js";
+import { requireCorpus, CORPUS_DIR } from "./helpers/corpus-check.js";
 import type { SearchRequest } from "../src/domain/types.js";
 
-const DB_DIR = process.env.EVAL_CORPUS ?? "/tmp/opencode/jevily-corpus";
+const DB_DIR = process.env.EVAL_CORPUS ?? CORPUS_DIR;
 /** A passage has to clear this to count as stating the fact. */
 const STATES_FACT = 0.6;
 

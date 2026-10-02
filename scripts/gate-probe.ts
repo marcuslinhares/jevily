@@ -17,6 +17,7 @@
  */
 
 import { Store } from "../src/store/db.js";
+import { CORPUS_DIR } from "./helpers/corpus-check.js";
 import { IndexManager } from "../src/store/indexer.js";
 import { DecisionService, createDecisionService } from "../src/decision/service.js";
 import { createEngine } from "../src/decision/index.js";
@@ -26,7 +27,7 @@ import { resolvePolicy } from "../src/pipeline/policy.js";
 import { CORPUS_GOLD } from "./helpers/corpus-gold.js";
 import type { SearchRequest } from "../src/domain/types.js";
 
-const DB_DIR = process.env.EVAL_CORPUS ?? "/tmp/opencode/jevily-corpus";
+const DB_DIR = process.env.EVAL_CORPUS ?? CORPUS_DIR;
 const MAX_RESULTS = Number(process.env.PROBE_MAX_RESULTS ?? 20);
 
 function pad(value: string, width: number): string {

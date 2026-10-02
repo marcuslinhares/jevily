@@ -19,8 +19,9 @@ import { createEngine } from "../src/decision/index.js";
 import { createGenerator } from "../src/llm/generator.js";
 import { runSearch } from "../src/pipeline/search.js";
 import { chunkStats } from "./helpers/chunk-stats.js";
+import { CORPUS_DIR } from "./helpers/corpus-check.js";
 
-const DB_DIR = process.env.EVAL_CORPUS ?? "/tmp/opencode/jevily-corpus";
+const DB_DIR = process.env.EVAL_CORPUS ?? CORPUS_DIR;
 
 /** The four questions that were answered while their gold page was missing. */
 const CASES = [

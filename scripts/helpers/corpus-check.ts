@@ -17,6 +17,19 @@ import { Store } from "../../src/store/db.js";
 import { CORPUS_FACTS } from "./corpus-facts.js";
 import { CORPUS_GOLD } from "./corpus-gold.js";
 
+/**
+ * Where the crawled corpus lives.
+ *
+ * Under the project, gitignored, rather than in /tmp. Every number in the README was
+ * taken against this index, and a cleaned tmpdir takes it away silently: the next run
+ * opens an empty database and the guards here report every labelled page as missing,
+ * which is at least loud — but the first time this happened it was misread as an
+ * interrupted crawl rather than an emptied directory, and the crawl was repeated for
+ * no reason. A measurement corpus belongs somewhere that survives the machine
+ * cleaning up after itself.
+ */
+export const CORPUS_DIR = new URL("../../.corpus/", import.meta.url).pathname;
+
 export interface CorpusCheck {
   docs: number;
   chunks: number;
@@ -66,9 +79,10 @@ export function requireCorpus(store: Store, label: string): void {
     `\n${label}: the index does not hold the pages these labels name.\n` +
       `  ${check.docs} documents, ${check.chunks} chunks, ` +
       `${check.missing.length} labelled pages missing:\n` +
-      check.missing.map((m) => `    ${m.from}: ${m.page}   <- "${m.query}"\n`).join("") +
+      check.missing.slice(0, 6).map((m) => `    ${m.from}: ${m.page}   <- "${m.query}"\n`).join("") +
+      (check.missing.length > 6 ? `    ... and ${check.missing.length - 6} more\n` : "") +
       `\n  Every number this probe would print describes a different index than the\n` +
-      `  labels were written for. Re-crawl first:\n` +
+      `  labels were written for. Build it first:\n` +
       `      npm run probe:corpus crawl 200\n\n`,
   );
   process.exit(1);
